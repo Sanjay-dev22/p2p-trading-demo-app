@@ -1,0 +1,15 @@
+{
+  "context": {
+    "networkId": "indiaenergystack.in/test-ies-p2p-trading-network",
+    "version": "2.0.0",
+    "action": "on_confirm",
+    "bapId": "buyerapp.example.com",
+    "bapUri": "http://buyerapp.example.com:9000/bap/receiver",
+    "bppId": "buyer-discom-ledger.example.com",
+    "bppUri": "http://buyer-discom-ledger.example.com:9000/bap/receiver",
+    "transactionId": "1268c204-675b-4adb-9321-b08231b147b2",
+    "messageId": "0eb2efea-cdf5-4e7d-a8c2-bafe23453ff3",
+    "timestamp": "2026-04-25T10:10:10Z"
+  },
+  "message": {"ack": {"status": "ACK"}}
+}

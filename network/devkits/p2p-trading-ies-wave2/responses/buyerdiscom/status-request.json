@@ -1,0 +1,62 @@
+{
+  "context": {
+    "networkId": "indiaenergystack.in/test-ies-p2p-trading-network",
+    "version": "2.0.0",
+    "action": "status",
+    "bapId": "buyer-discom-ledger.example.com",
+    "bapUri": "http://buyer-discom-ledger.example.com:9000/bap/receiver",
+    "bppId": "buyerdiscom.example.com",
+    "bppUri": "http://buyerdiscom.example.com:9000/bpp/receiver",
+    "transactionId": "bdledger-status-001",
+    "messageId": "bdledger-status-msg-001",
+    "timestamp": "2026-04-26T05:35:00Z",
+    "schemaContext": ["https://schema.nfh.global/DatasetItem/v1.1/context.jsonld", "https://schema.nfh.global/BecknTimeSeries/v1.0/context.jsonld"]
+  },
+  "message": {
+    "contract": {
+      "id": "contract-p2p-001",
+      "status": {"code": "ACTIVE"},
+      "commitments": [
+        {
+          "id": "commitment-p2p-001",
+          "status": {"descriptor": {"code": "ACTIVE"}},
+          "resources": [
+            {
+              "id": "ds-meter-request-buyer-001",
+              "descriptor": {"name": "Meter energy consumption request - buyer discom"},
+              "quantity": {"@type": "Quantity", "unitText": "request", "unitCode": "EA", "value": "1"},
+              "resourceAttributes": {
+                "@context": "https://schema.nfh.global/DatasetItem/v1.1/context.jsonld",
+                "@type": "DatasetItem",
+                "schema:identifier": "ds-meter-request-buyer-001",
+                "schema:name": "Meter energy consumption request - buyer discom",
+                "schema:temporalCoverage": "2026-04-26T04:30:00Z/2026-04-26T05:30:00Z",
+                "dataPayload": [
+                  {
+                    "@context": "https://schema.nfh.global/BecknTimeSeries/v1.0/context.jsonld",
+                    "@type": "TimeSeries",
+                    "resourceName": "TEST_METER_BUYER_001",
+                    "clientName": "TEST_DISCOM_BUYER",
+                    "intervalPeriod": {"start": "2026-04-26T04:30:00Z", "duration": "PT1H"},
+                    "payloadDescriptors": [{"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "ENERGY_CONSUMPTION", "units": "KWH"}],
+                    "intervals": [{"id": 0, "payloads": [{"type": "ENERGY_CONSUMPTION", "values": []}]}]
+                  },
+                  {
+                    "@context": "https://schema.nfh.global/BecknTimeSeries/v1.0/context.jsonld",
+                    "@type": "TimeSeries",
+                    "resourceName": "TEST_METER_BUYER_002",
+                    "clientName": "TEST_DISCOM_BUYER",
+                    "intervalPeriod": {"start": "2026-04-26T04:30:00Z", "duration": "PT1H"},
+                    "payloadDescriptors": [{"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "ENERGY_CONSUMPTION", "units": "KWH"}],
+                    "intervals": [{"id": 0, "payloads": [{"type": "ENERGY_CONSUMPTION", "values": []}]}]
+                  }
+                ]
+              }
+            }
+          ],
+          "offer": {"id": "offer-p2p-001", "resourceIds": ["ds-meter-request-buyer-001"]}
+        }
+      ]
+    }
+  }
+}

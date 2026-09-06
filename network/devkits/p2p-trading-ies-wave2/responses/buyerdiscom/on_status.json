@@ -1,0 +1,77 @@
+{
+  "context": {
+    "networkId": "indiaenergystack.in/test-ies-p2p-trading-network",
+    "version": "2.0.0",
+    "action": "on_status",
+    "bapId": "buyerapp.example.com",
+    "bapUri": "http://buyerapp.example.com:9000/bap/receiver",
+    "bppId": "buyer-discom-ledger.example.com",
+    "bppUri": "http://buyer-discom-ledger.example.com:9000/bpp/caller",
+    "transactionId": "1268c204-675b-4adb-9321-b08231b147b2",
+    "messageId": "4361f987-6994-4039-adf2-7cda1e1e86d7",
+    "timestamp": "2026-04-26T06:30:00Z",
+    "schemaContext": [
+      "https://schema.nfh.global/EnergyTradeOffer/v2.0/context.jsonld",
+      "https://schema.nfh.global/DEGContract/v2.0/context.jsonld",
+      "https://schema.nfh.global/EnergyCustomer/v2.0/context.jsonld",
+      "https://schema.nfh.global/BecknTimeSeries/v1.0/context.jsonld",
+      "https://schema.nfh.global/DiscomLedgerProvider/v1.0/context.jsonld"
+    ]
+  },
+  "message": {
+    "contract": {
+      "id": "contract-p2p-001",
+      "status": {"code": "ACTIVE"},
+      "commitments": [
+        {
+          "id": "commitment-p2p-001",
+          "status": {"descriptor": {"code": "ACTIVE"}},
+          "resources": [
+            {
+              "id": "energy-resource-solar-001",
+              "descriptor": {"name": "Solar energy slot - 2026-04-26 10:00-12:00 IST"},
+              "quantity": {"@type": "Quantity", "unitCode": "KWH", "unitQuantity": 35.0},
+              "resourceAttributes": {"@context": "https://schema.nfh.global/EnergyResource/v2.0/context.jsonld", "@type": "EnergyResource", "type": "SOLAR", "id": "TEST_METER_SELLER_001"}
+            }
+          ],
+          "offer": {"id": "offer-p2p-001", "resourceIds": ["energy-resource-solar-001"]},
+          "commitmentAttributes": {
+            "@context": "https://schema.nfh.global/BecknTimeSeries/v1.0/context.jsonld",
+            "@type": "TimeSeries",
+            "intervalPeriod": {"start": "2026-04-26T04:30:00Z", "duration": "PT1H"},
+            "payloadDescriptors": [
+              {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "PRICE_PER_KWH", "currency": "INR", "insertedBy": "sellerPlatform"},
+              {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "REQUESTED_QTY", "units": "KWH", "insertedBy": "buyerPlatform"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "BUYER_DISCOM_ALLOC", "units": "KWH", "insertedBy": "buyerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "BUYER_DISCOM_STATUS", "units": "STRING", "insertedBy": "buyerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "SELLER_DISCOM_ALLOC", "units": "KWH", "insertedBy": "sellerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "SELLER_DISCOM_STATUS", "units": "STRING", "insertedBy": "sellerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "FINAL_ALLOC", "units": "KWH", "insertedBy": "sellerDiscom"}
+            ],
+            "intervals": [
+              {"id": 0, "payloads": [{"type": "PRICE_PER_KWH", "values": []}, {"type": "REQUESTED_QTY", "values": []}, {"type": "BUYER_DISCOM_ALLOC", "values": [18.5]}, {"type": "BUYER_DISCOM_STATUS", "values": ["COMPLETED"]}, {"type": "SELLER_DISCOM_ALLOC", "values": []}, {"type": "SELLER_DISCOM_STATUS", "values": []}, {"type": "FINAL_ALLOC", "values": []}]},
+              {"id": 1, "payloads": [{"type": "PRICE_PER_KWH", "values": []}, {"type": "REQUESTED_QTY", "values": []}, {"type": "BUYER_DISCOM_ALLOC", "values": [14.2]}, {"type": "BUYER_DISCOM_STATUS", "values": ["COMPLETED"]}, {"type": "SELLER_DISCOM_ALLOC", "values": []}, {"type": "SELLER_DISCOM_STATUS", "values": []}, {"type": "FINAL_ALLOC", "values": []}]}
+            ]
+          }
+        }
+      ],
+      "contractAttributes": {
+        "@context": "https://schema.nfh.global/DEGContract/v2.0/context.jsonld",
+        "@type": "DEGContract",
+        "roles": [
+          {"role": "buyerPlatform", "participantId": "buyerapp.example.com"},
+          {"role": "sellerPlatform", "participantId": "sellerapp.example.com"},
+          {"role": "buyerDiscom", "participantId": "TEST_DISCOM_BUYER"},
+          {"role": "sellerDiscom", "participantId": "TEST_DISCOM_SELLER"}
+        ],
+        "policy": {"url": "https://api.dedi.global/dedi/lookup/indiaenergystack.in/ies-rulesets/p2p-trading-ies-contractpolicy-common", "queryPath": "data.deg.contracts.p2p_trading"}
+      },
+      "participants": [
+        {"id": "sellerapp.example.com", "participantAttributes": {"@context": "https://schema.nfh.global/EnergyCustomer/v2.0/context.jsonld", "@type": "EnergyCustomer", "meterId": "TEST_METER_SELLER_001", "utilityCustomerId": "TEST_CUST_SELLER_001", "platformUrl": "http://sellerapp.example.com:9000"}},
+        {"id": "buyerapp.example.com", "participantAttributes": {"@context": "https://schema.nfh.global/EnergyCustomer/v2.0/context.jsonld", "@type": "EnergyCustomer", "meterId": "TEST_METER_BUYER_001", "utilityCustomerId": "TEST_CUST_BUYER_001", "platformUrl": "http://buyerapp.example.com:9000"}},
+        {"id": "TEST_DISCOM_BUYER", "participantAttributes": {"@context": "https://schema.nfh.global/DiscomLedgerProvider/v1.0/context.jsonld", "@type": "DiscomLedgerProvider", "discomId": "buyer-discom.example.com", "discomUri": "http://buyer-discom.example.com:9000", "ledgerId": "buyer-discom-ledger.example.com", "ledgerUri": "http://buyer-discom-ledger.example.com:9000"}},
+        {"id": "TEST_DISCOM_SELLER", "participantAttributes": {"@context": "https://schema.nfh.global/DiscomLedgerProvider/v1.0/context.jsonld", "@type": "DiscomLedgerProvider", "discomId": "seller-discom.example.com", "discomUri": "http://seller-discom.example.com:9000", "ledgerId": "seller-discom-ledger.example.com", "ledgerUri": "http://seller-discom-ledger.example.com:9000"}}
+      ]
+    }
+  }
+}

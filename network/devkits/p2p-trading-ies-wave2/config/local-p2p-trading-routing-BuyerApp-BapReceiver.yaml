@@ -1,0 +1,19 @@
+# BuyerApp (BAP) Receiver routing: on_* callbacks → buyer-app
+# (p2p-trading-app/buyer-app, a real Node app run as a plain host process,
+# not a container — reached via Docker Desktop's host.docker.internal DNS
+# name. Was sandbox-buyerapp, the fidedocker/sandbox-2.0 fixture-replay
+# stub; see docker-compose.yml for the commented-out original.)
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://host.docker.internal:4001/api/bap-webhook"
+    endpoints:
+      - on_select
+      - on_init
+      - on_confirm
+      - on_status
+      - on_update
+      - on_cancel
+      - on_subscribe
+      - catalog

@@ -1,0 +1,9 @@
+# BuyerDiscom-actor /bpp/caller routing: outbound on_status carrying meter
+# actuals (DatasetItem-wrapped BecknTimeSeries) → context.bapUri, which
+# the actor sets to the buyer-discom-ledger's /bap/receiver. targetType:bap
+# resolves the destination from the message body (pure Beckn semantics).
+routingRules:
+  - version: "2.0.0"
+    targetType: "bap"
+    endpoints:
+      - on_status

@@ -1,0 +1,135 @@
+appName: "onix-buyerdiscom-local"
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys:
+    - transaction_id
+    - message_id
+    - subscriber_id
+    - module_id
+http:
+  port: 8085
+  timeout:
+    read: 30
+    write: 30
+    idle: 30
+pluginManager:
+  root: ./plugins
+
+# BuyerDiscom *actor* — the buyer's distribution utility, distinct from
+# the buyer-discom-ledger TSP. Symmetric counterpart to sellerdiscom.
+# Pushes meter actuals via `on_status` (DatasetItem-wrapped BecknTimeSeries)
+# to buyer-discom-ledger /bap/receiver. Receives `status` meter-data requests
+# from the ledger at /bpp/receiver (ack-only in this devkit — no backend).
+#
+# Signing is intentionally off here — the receiver (buyer-discom-ledger
+# /bap/receiver) does not validate signatures in this devkit, and the actor's
+# subscriber id (buyerdiscom.example.com) is not registered in the testnet
+# dedi registry. For prod, register the subscriber and re-enable `signer`
+# + `- sign` in the steps list below.
+modules:
+  - name: bppTxnCaller
+    path: /bpp/caller/
+    handler:
+      type: std
+      role: bpp
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        registry:
+          id: dediregistry
+          config:
+            registryName: subscribers.beckn.one
+            allowedNetworkIDs: "indiaenergystack.in/test-ies-p2p-trading-network,nfh.global/testnet-deg"
+            timeout: 10
+        keyManager:
+          id: simplekeymanager
+          config:
+            networkParticipant: buyerdiscom.example.com
+            keyId: 76EU9EFnUgC32qnMhzM6RPqDXA73xfSbFmfgtpnPgNsGR9cSN7ZGUk
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "172800"
+            extendedSchema_enabled: "true"
+            extendedSchema_cacheTTL: "172800"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.nfh.global"
+        cache:
+          id: cache
+          config:
+            addr: redis-buyerdiscom:6379
+        router:
+          id: router
+          config:
+            routingConfig: ./config/local-p2p-trading-routing-BuyerDiscomActor-Caller.yaml
+        signer:
+          id: signer
+        middleware:
+          - id: reqpreprocessor
+            config:
+              uuidKeys: transaction_id,message_id
+              role: bpp
+      steps:
+        - validateSchema
+        - addRoute
+        - sign
+
+  # /bpp/receiver — receives `status` meter-data requests from the ledger.
+  # Ack-only in this devkit: onix validates the request and returns ACK.
+  # In production the discom would then fire on_status back with actuals.
+  - name: bppTxnReceiver
+    path: /bpp/receiver/
+    handler:
+      type: std
+      role: bpp
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        registry:
+          id: dediregistry
+          config:
+            registryName: subscribers.beckn.one
+            allowedNetworkIDs: "indiaenergystack.in/test-ies-p2p-trading-network,nfh.global/testnet-deg"
+            timeout: 10
+        keyManager:
+          id: simplekeymanager
+          config:
+            networkParticipant: buyerdiscom.example.com
+            keyId: 76EU9EFnUgC32qnMhzM6RPqDXA73xfSbFmfgtpnPgNsGR9cSN7ZGUk
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "172800"
+            extendedSchema_enabled: "true"
+            extendedSchema_cacheTTL: "172800"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.nfh.global"
+        cache:
+          id: cache
+          config:
+            addr: redis-buyerdiscom:6379
+        middleware:
+          - id: reqpreprocessor
+            config:
+              uuidKeys: transaction_id,message_id
+              role: bpp
+      steps:
+        - validateSchema

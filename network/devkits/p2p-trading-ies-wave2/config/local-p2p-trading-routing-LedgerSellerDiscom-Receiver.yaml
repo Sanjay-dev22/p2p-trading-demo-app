@@ -1,0 +1,16 @@
+# SellerDiscom Ledger Receiver routing: incoming status → sandbox-ledger-sellerdiscom
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://sandbox-ledger-sellerdiscom:3003/api/webhook"
+    endpoints:
+      - status
+
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://sandbox-ledger-sellerdiscom:3003/api/bap-webhook"
+    endpoints:
+      - on_confirm
+      - on_status

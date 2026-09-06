@@ -1,0 +1,12 @@
+# BuyerApp BPP-Receiver routing: status request from sellerapp (seller-initiated
+# sub-tx) lands here, gets routed to sandbox-buyerapp for ACK. The recorder
+# plugin runs on this module to cascade /status to buyerDiscom ledger
+# (mirrors sellerapp's BPP-receiver behaviour for the canonical
+# buyer-initiated direction).
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://sandbox-buyerapp:3001/api/webhook"
+    endpoints:
+      - status

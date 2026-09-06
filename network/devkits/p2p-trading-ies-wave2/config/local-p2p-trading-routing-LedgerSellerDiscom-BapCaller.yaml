@@ -1,0 +1,9 @@
+# SellerDiscom Ledger /bap/caller routing: outbound status request from the
+# ledger (acting as BAP) → sellerdiscom utility /bpp/receiver.
+# targetType:bpp reads context.bppUri from the message body, which the ledger
+# sets to the discom utility's /bpp/receiver URL.
+routingRules:
+  - version: "2.0.0"
+    targetType: "bpp"
+    endpoints:
+      - status

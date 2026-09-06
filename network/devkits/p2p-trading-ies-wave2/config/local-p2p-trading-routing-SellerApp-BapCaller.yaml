@@ -1,0 +1,10 @@
+# SellerApp acting as BAP-caller (seller-initiated sub-tx routing).
+# Used for seller-initiated requests where the seller plays BAP-caller —
+# e.g. asking the buyer about buyer-discom allocation status, or asking
+# its own seller-discom-ledger for settlement status. targetType: bpp
+# resolves context.bppId via the dedi registry.
+routingRules:
+  - version: "2.0.0"
+    targetType: "bpp"
+    endpoints:
+      - status

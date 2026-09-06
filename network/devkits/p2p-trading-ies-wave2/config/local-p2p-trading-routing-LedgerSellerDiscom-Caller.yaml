@@ -1,0 +1,11 @@
+# SellerDiscom /bpp/caller routing: on_status (and other on_* responses) from
+# the sellerDiscom sandbox → context.bapUri. Pure Beckn semantics —
+# targetType:bap reads the BAP-side address out of the message body, which
+# the recorder rewrote during the seller→sellerDiscom cascade to point at
+# the seller's /bap/receiver (derived from seller's participant.platformUrl).
+routingRules:
+  - version: "2.0.0"
+    targetType: "bap"
+    endpoints:
+      - on_status
+      - on_confirm

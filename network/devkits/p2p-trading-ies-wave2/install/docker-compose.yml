@@ -1,0 +1,378 @@
+# P2P Trading (wave2) devkit stack.
+#
+# BAP-side and BPP-side services live on separate, mutually unreachable
+# docker networks (bap_side, bpp_side). Each side has its own redis
+# (aliased as `redis` inside its network). The beckn-router (Caddy) is the
+# ONLY container with a foot in both networks; it accepts traffic on :9000
+# and routes /bap/* and /bpp/* to the respective onix adapter on its own side.
+#
+# Split discom design (wave2):
+#   onix-ledger-sellerdiscom (8083) + sandbox-ledger-sellerdiscom (3003) live on bpp_side.
+#   onix-ledger-buyerdiscom  (8084) + sandbox-ledger-buyerdiscom  (3004) live on bap_side.
+#   beckn-router exposes /ledger-sellerdiscom/* and /ledger-buyerdiscom/* to bridge both sides.
+#
+# Run full stack:
+#   docker compose up -d
+#
+# Run with observability enabled:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Expose the router to the public internet: copy ngrok.yml.example to
+# ngrok.yml, paste your authtoken, then:
+#   ngrok start --all --config ngrok.yml
+# Point workflows at the tunnel URL (forces real internet traversal):
+#   PUBLIC_URL=https://<host>.ngrok-free.dev ./run-arazzo.sh
+
+services:
+  # ---------- BAP side ----------
+  redis-bap:
+    image: redis:alpine
+    hostname: redis
+    container_name: redis-bap
+    networks:
+      - bap_side
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  onix-buyerapp:
+    image: fidedocker/onix-adapter-deg:v2
+    container_name: onix-buyerapp
+    ports:
+      - "8081:8081"
+    environment:
+      CONFIG_FILE: "/app/config/local-p2p-trading-buyerapp.yaml"
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+      REDIS_ADDR: redis:6379
+      RABBITMQ_ADDR: rabbitmq:5672
+      RABBITMQ_USER: admin
+      RABBITMQ_PASS: admin123
+    volumes:
+      - ../config:/app/config
+      - ../schemas:/app/schemas
+      - ../../../specification/policies:/app/policies
+    command: ["./server", "--config=/app/config/local-p2p-trading-buyerapp.yaml"]
+    networks:
+      - bap_side
+    extra_hosts:
+      # Docker Desktop (Windows/Mac) already resolves this; plain Docker
+      # Engine on Linux needs this line to reach the host machine, where
+      # buyer-app / seller-app run as plain `npm start` processes, not containers.
+      - "host.docker.internal:host-gateway"
+
+  # sandbox-buyerapp (fidedocker/sandbox-2.0, fixture-replay stub) is
+  # replaced by the real p2p-trading-app/buyer-app, which runs as a plain
+  # host process (not a container) and is reached via host.docker.internal
+  # — see local-p2p-trading-routing-BuyerApp-BapReceiver.yaml. Left
+  # commented out, not deleted, so it's easy to fall back to.
+  # sandbox-buyerapp:
+  #   container_name: sandbox-buyerapp
+  #   image: fidedocker/sandbox-2.0:latest
+  #   platform: linux/amd64
+  #   environment:
+  #     - NODE_ENV=production
+  #     - PORT=3001
+  #   ports:
+  #     - "3001:3001"
+  #   volumes:
+  #     - ./sandbox-ack-status-route.js:/startup/sandbox-ack-status-route.js:ro
+  #   command: ["sh", "-c", "node /startup/sandbox-ack-status-route.js && npm start"]
+  #   healthcheck:
+  #     test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 5
+  #     start_period: 10s
+  #   networks:
+  #     - bap_side
+
+  # ---------- BPP side ----------
+  redis-bpp:
+    image: redis:alpine
+    hostname: redis
+    container_name: redis-bpp
+    networks:
+      - bpp_side
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  onix-sellerapp:
+    image: fidedocker/onix-adapter-deg:v2
+    container_name: onix-sellerapp
+    ports:
+      - "8082:8082"
+    environment:
+      CONFIG_FILE: "/app/config/local-p2p-trading-sellerapp.yaml"
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: root
+      REDIS_ADDR: redis:6379
+      RABBITMQ_ADDR: rabbitmq:5672
+      RABBITMQ_USER: admin
+      RABBITMQ_PASS: admin123
+    volumes:
+      - ../config:/app/config
+      - ../schemas:/app/schemas
+      - ../../../specification/policies:/app/policies
+    command: ["./server", "--config=/app/config/local-p2p-trading-sellerapp.yaml"]
+    networks:
+      - bpp_side
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # sandbox-sellerapp (fidedocker/sandbox-2.0, fixture-replay stub) is
+  # replaced by the real p2p-trading-app/seller-app, which runs as a plain
+  # host process (not a container) and is reached via host.docker.internal
+  # — see local-p2p-trading-routing-SellerApp-BppReceiver.yaml. Left
+  # commented out, not deleted, so it's easy to fall back to.
+  # sandbox-sellerapp:
+  #   container_name: sandbox-sellerapp
+  #   image: fidedocker/sandbox-2.0:latest
+  #   platform: linux/amd64
+  #   environment:
+  #     - NODE_ENV=production
+  #     - PORT=3002
+  #     - PERSONA=bpp
+  #     # Re-point the seller discom's ledger in on_init/on_confirm fixtures to the
+  #     # shared IES ledger (the fixtures default to the local sandbox ledger via
+  #     # {{SELLER_LEDGER_*:-...}}). Requires a sandbox image with fixture env
+  #     # substitution (readDomainResponse). Unset these to keep records local.
+  #     - SELLER_LEDGER_ID=ies-p2p-energy-ledger.beckn.io
+  #     - SELLER_LEDGER_URI=https://ies-p2p-energy-ledger.beckn.io
+  #   ports:
+  #     - "3002:3002"
+  #   volumes:
+  #     - ./sandbox-ack-status-route.js:/startup/sandbox-ack-status-route.js:ro
+  #     # Mock on_* responses (the image ships no fixtures for these networks):
+  #     # without them the sandbox answers init/confirm/status with a
+  #     # context-only body that fails schema validation at the seller's
+  #     # /bpp/caller. The sandbox resolves fixtures by context.networkId, so
+  #     # mount the same dir for BOTH recognized test networks; PERSONA=bpp
+  #     # resolves the bpp/ subdir. Same mount pattern as the ledger sandboxes.
+  #     - ../responses/sellerapp:/app/dist/webhook/jsons/indiaenergystack.in/test-ies-p2p-trading-network/response/bpp
+  #     - ../responses/sellerapp:/app/dist/webhook/jsons/nfh.global/testnet-deg/response/bpp
+  #   command: ["sh", "-c", "node /startup/sandbox-ack-status-route.js && npm start"]
+  #   healthcheck:
+  #     test: ["CMD", "wget", "-qO-", "http://localhost:3002/api/health"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 5
+  #     start_period: 10s
+  #   networks:
+  #     - bpp_side
+
+  # ---------- Seller Discom Ledger (BPP side) ----------
+  redis-ledger:
+    image: redis:alpine
+    hostname: redis-ledger
+    container_name: redis-ledger
+    networks:
+      - bap_side
+      - bpp_side
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  onix-ledger-sellerdiscom:
+    image: fidedocker/onix-adapter-deg:v2
+    container_name: onix-ledger-sellerdiscom
+    ports:
+      - "8083:8083"
+    environment:
+      CONFIG_FILE: "/app/config/local-p2p-trading-ledger-sellerdiscom.yaml"
+    volumes:
+      - ../config:/app/config
+      - ../schemas:/app/schemas
+      - ../../../specification/policies:/app/policies
+    command: ["./server", "--config=/app/config/local-p2p-trading-ledger-sellerdiscom.yaml"]
+    networks:
+      - bpp_side
+    depends_on:
+      redis-ledger:
+        condition: service_healthy
+
+  sandbox-ledger-sellerdiscom:
+    container_name: sandbox-ledger-sellerdiscom
+    image: fidedocker/sandbox-2.0:latest
+    platform: linux/amd64
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      - PERSONA=ledger
+      # Route on_status callback through onix-ledger-sellerdiscom caller so it
+      # is signed before forwarding to the BPP receiver (targetType: bpp).
+      - BPP_CALLBACK_ENDPOINT=http://onix-ledger-sellerdiscom:8083/bpp/caller
+    ports:
+      - "3003:3003"
+    volumes:
+      # Mounted for BOTH recognized test networks (fixture lookup is by
+      # context.networkId).
+      - ../responses/sellerdiscom:/app/dist/webhook/jsons/indiaenergystack.in/test-ies-p2p-trading-network/response/ledger
+      - ../responses/sellerdiscom:/app/dist/webhook/jsons/nfh.global/testnet-deg/response/ledger
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3003/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - bpp_side
+
+  # ---------- Buyer Discom Ledger (BAP side) ----------
+  onix-ledger-buyerdiscom:
+    image: fidedocker/onix-adapter-deg:v2
+    container_name: onix-ledger-buyerdiscom
+    ports:
+      - "8084:8084"
+    environment:
+      CONFIG_FILE: "/app/config/local-p2p-trading-ledger-buyerdiscom.yaml"
+    volumes:
+      - ../config:/app/config
+      - ../schemas:/app/schemas
+      - ../../../specification/policies:/app/policies
+    command: ["./server", "--config=/app/config/local-p2p-trading-ledger-buyerdiscom.yaml"]
+    networks:
+      - bap_side
+    depends_on:
+      redis-ledger:
+        condition: service_healthy
+
+  sandbox-ledger-buyerdiscom:
+    container_name: sandbox-ledger-buyerdiscom
+    image: fidedocker/sandbox-2.0:latest
+    platform: linux/amd64
+    environment:
+      - NODE_ENV=production
+      - PORT=3004
+      - PERSONA=ledger
+      # buyerdiscom is a terminal sink in the wave2 chain (BAP role: only
+      # receives /on_status); no callback is fired so this env var is unset.
+    ports:
+      - "3004:3004"
+    volumes:
+      # Mounted for BOTH recognized test networks (fixture lookup is by
+      # context.networkId).
+      - ../responses/buyerdiscom:/app/dist/webhook/jsons/indiaenergystack.in/test-ies-p2p-trading-network/response/ledger
+      - ../responses/buyerdiscom:/app/dist/webhook/jsons/nfh.global/testnet-deg/response/ledger
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3004/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - bap_side
+
+  # ---------- Buyer Discom Actor (the utility itself, distinct from the
+  #            buyer-discom-ledger TSP). Symmetric counterpart to the seller
+  #            discom actor. Lives on the BAP side so it can reach
+  #            buyer-discom-ledger directly via docker DNS / network alias. ----------
+  redis-buyerdiscom:
+    image: redis:alpine
+    hostname: redis-buyerdiscom
+    container_name: redis-buyerdiscom
+    networks:
+      - bap_side
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  onix-buyerdiscom:
+    image: fidedocker/onix-adapter-deg:v2
+    container_name: onix-buyerdiscom
+    ports:
+      - "8085:8085"
+    environment:
+      CONFIG_FILE: "/app/config/local-p2p-trading-buyerdiscom.yaml"
+    volumes:
+      - ../config:/app/config
+      - ../schemas:/app/schemas
+      - ../../../specification/policies:/app/policies
+    command: ["./server", "--config=/app/config/local-p2p-trading-buyerdiscom.yaml"]
+    networks:
+      - bap_side
+    depends_on:
+      redis-buyerdiscom:
+        condition: service_healthy
+
+  # ---------- Seller Discom Actor (the utility itself, distinct from the
+  #            seller-discom-ledger TSP). New Beckn-native replacement for
+  #            the bespoke /ledger/allocate REST push. Lives on the BPP
+  #            side so it can reach seller-discom-ledger directly via
+  #            docker DNS / network alias. ----------
+  redis-sellerdiscom:
+    image: redis:alpine
+    hostname: redis-sellerdiscom
+    container_name: redis-sellerdiscom
+    networks:
+      - bpp_side
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  onix-sellerdiscom:
+    image: fidedocker/onix-adapter-deg:v2
+    container_name: onix-sellerdiscom
+    ports:
+      - "8086:8086"
+    environment:
+      CONFIG_FILE: "/app/config/local-p2p-trading-sellerdiscom.yaml"
+    volumes:
+      - ../config:/app/config
+      - ../schemas:/app/schemas
+      - ../../../specification/policies:/app/policies
+    command: ["./server", "--config=/app/config/local-p2p-trading-sellerdiscom.yaml"]
+    networks:
+      - bpp_side
+    depends_on:
+      redis-sellerdiscom:
+        condition: service_healthy
+
+  # ---------- Host router (only container on both sides) ----------
+  # Caddy listens on :9000 and routes by Host header. Network aliases below
+  # give each Beckn participant its own resolvable hostname (buyer.beckn-router,
+  # seller.beckn-router, sellerdiscom.beckn-router, buyerdiscom.beckn-router)
+  # so containers can reach any participant by name. Each alias is declared on
+  # both networks because callers live on either side and must resolve every
+  # participant — Docker DNS only sees aliases on its own network.
+  beckn-router:
+    image: caddy:alpine
+    container_name: beckn-router
+    ports:
+      - "9000:9000"
+    networks:
+      bap_side:
+        aliases:
+          - buyerapp.example.com
+          - sellerapp.example.com
+          - seller-discom-ledger.example.com
+          - buyer-discom-ledger.example.com
+          - sellerdiscom.example.com
+          - buyerdiscom.example.com
+      bpp_side:
+        aliases:
+          - buyerapp.example.com
+          - sellerapp.example.com
+          - seller-discom-ledger.example.com
+          - buyer-discom-ledger.example.com
+          - sellerdiscom.example.com
+          - buyerdiscom.example.com
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+
+networks:
+  bap_side:
+    driver: bridge
+  bpp_side:
+    driver: bridge

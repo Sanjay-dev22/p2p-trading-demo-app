@@ -1,0 +1,9 @@
+# BuyerApp acting as BPP-caller (reverse-cascade response routing).
+# Used when the buyer responds to a seller-initiated /status request with
+# an /on_status callback back to the seller's /bap/receiver. targetType:
+# bap resolves context.bapId via the dedi registry.
+routingRules:
+  - version: "2.0.0"
+    targetType: "bap"
+    endpoints:
+      - on_status

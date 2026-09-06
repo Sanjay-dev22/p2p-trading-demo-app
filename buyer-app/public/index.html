@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Buyer Platform — P2P Trading Demo</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121822; --panel2: #182233; --border: #263349;
+    --text: #e8edf5; --muted: #8fa1bd; --accent: #5aa9ff; --amber: #f5b942; --red: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: 0.02em; }
+  header .role { color: var(--accent); font-weight: 600; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 14px; }
+  form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--muted); }
+  .field input, .field select { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; width: 150px; font-size: 14px; }
+  button { background: var(--accent); color: #04121f; border: none; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  button:hover { filter: brightness(1.08); }
+  button.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  button.danger { background: var(--red); color: #2a0505; }
+  .list { display: flex; flex-direction: column; gap: 10px; }
+  .row { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .row .meta { display: flex; flex-direction: column; gap: 2px; }
+  .row .meta .primary { font-weight: 600; }
+  .row .meta .secondary { font-size: 12px; color: var(--muted); }
+  .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge.pending { background: rgba(245,185,66,0.15); color: var(--amber); }
+  .badge.confirming { background: rgba(90,169,255,0.15); color: var(--accent); }
+  .badge.active { background: rgba(90,169,255,0.25); color: var(--accent); }
+  .badge.settled { background: rgba(90,169,255,0.35); color: var(--accent); }
+  .badge.rejected { background: rgba(255,107,107,0.15); color: var(--red); }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .hint { color: var(--muted); font-size: 12px; margin: -6px 0 8px; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--accent); color: var(--text); padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transform: translateY(8px); transition: all 0.25s; pointer-events: none; max-width: 420px; }
+  .toast.err { border-color: var(--red); }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .conn { font-size: 11px; color: var(--muted); }
+  .conn.up::before { content: "● "; color: var(--accent); }
+  .conn.down::before { content: "● "; color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🔌 <span class="role">Buyer Platform</span> — buyerapp.example.com</h1>
+  <span class="conn down" id="conn">connecting…</span>
+</header>
+<main>
+  <div class="panel">
+    <h2>Discover offers</h2>
+    <div class="hint">Fires a real <code>discover</code> against the shared discovery service. Results (if any) arrive asynchronously below.</div>
+    <button class="secondary" id="discoverBtn">🔍 Refresh offers</button>
+    <div class="list" id="offers" style="margin-top:14px"><div class="empty">No offers discovered yet.</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Buy directly</h2>
+    <div class="hint">If the offer you want isn't listed above yet, enter it directly — same real <code>init</code> call either way.</div>
+    <form id="buyForm">
+      <div class="field"><label>Offer ID</label><input type="text" name="offerId" placeholder="offer-demo-xxxxxxxx" required></div>
+      <div class="field"><label>Quantity (kWh)</label><input type="number" step="0.1" name="quantityKwh" value="15" required></div>
+      <div class="field"><label>Price (₹/kWh)</label><input type="number" step="0.1" name="pricePerKwh" value="12.5" required></div>
+      <div class="field">
+        <label>Trade as</label>
+        <select name="buyerDiscomId">
+          <option value="allowed">Allowed discom</option>
+          <option value="blocked">Blocked discom (watch it get rejected)</option>
+        </select>
+      </div>
+      <button type="submit">Buy</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>My trades</h2>
+    <div class="list" id="trades"><div class="empty">No trades yet.</div></div>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let toastTimer;
+function toast(msg, isErr) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = "toast show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+function badge(status) {
+  const map = { PENDING: ["pending", "Pending"], CONFIRMING: ["confirming", "Confirming"], ACTIVE: ["active", "Active"], SETTLED: ["settled", "Settled"], REJECTED: ["rejected", "Rejected"] };
+  const [cls, label] = map[status] || ["pending", status];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+async function refreshAll() {
+  const [offers, trades] = await Promise.all([
+    fetch("/api/offers").then((r) => r.json()),
+    fetch("/api/trades").then((r) => r.json()),
+  ]);
+  renderOffers(offers);
+  renderTrades(trades);
+}
+
+function renderOffers(list) {
+  const el = $("#offers");
+  if (!list.length) { el.innerHTML = '<div class="empty">No offers discovered yet.</div>'; return; }
+  el.innerHTML = list.map((o) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary">${o.name || o.offer_id}</div>
+        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id}</div>
+      </div>
+      <button onclick="buyFromCard('${o.offer_id}', ${o.available_qty}, ${o.price_per_kwh})">Buy</button>
+    </div>`).join("");
+}
+
+function renderTrades(list) {
+  const el = $("#trades");
+  if (!list.length) { el.innerHTML = '<div class="empty">No trades yet.</div>'; return; }
+  el.innerHTML = list.map((t) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh — ${t.offerId}</div>
+        <div class="secondary">as ${t.buyerDiscom}${t.settlementAmount ? ` · paid ₹${t.settlementAmount.toFixed(2)}` : ""}${t.errorMessage ? ` · ${t.errorMessage}` : ""}</div>
+      </div>
+      ${badge(t.status)}
+    </div>`).join("");
+}
+
+async function buy(offerId, quantityKwh, pricePerKwh, buyerDiscomId) {
+  const res = await fetch("/api/buy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId, quantityKwh, pricePerKwh, buyerDiscomId }) });
+  const body = await res.json();
+  if (body.rejected) { toast("Rejected: " + (body.trade.errorMessage || "policy violation"), true); refreshAll(); return; }
+  if (!res.ok) { toast("Buy failed: " + (body.error || res.status), true); return; }
+  toast("init sent — waiting for seller");
+  refreshAll();
+}
+
+function buyFromCard(offerId, quantityKwh, pricePerKwh) {
+  buy(offerId, quantityKwh, pricePerKwh, "allowed");
+}
+
+$("#buyForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  buy(fd.get("offerId"), Number(fd.get("quantityKwh")), Number(fd.get("pricePerKwh")), fd.get("buyerDiscomId"));
+});
+
+$("#discoverBtn").addEventListener("click", async () => {
+  const res = await fetch("/api/discover", { method: "POST" });
+  const body = await res.json();
+  if (!res.ok) { toast("Discover failed: " + (body.error || res.status), true); return; }
+  toast("discover sent — results (if any) will appear shortly");
+});
+
+function connectWs() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { $("#conn").textContent = "live"; $("#conn").className = "conn up"; };
+  ws.onclose = () => { $("#conn").textContent = "disconnected"; $("#conn").className = "conn down"; setTimeout(connectWs, 2000); };
+  ws.onmessage = (ev) => {
+    const { type, data } = JSON.parse(ev.data);
+    if (type === "offers_updated") toast(`${data.count} offer(s) discovered`);
+    if (type === "buy_sent") toast("init sent");
+    if (type === "rejected") toast("Rejected: " + (data.errorMessage || "policy violation"), true);
+    if (type === "confirming") toast("Seller replied — confirm sent");
+    if (type === "active") toast("Trade confirmed — now ACTIVE");
+    if (type === "settled") toast(`Settled — paid ₹${data.settlementAmount.toFixed(2)}`);
+    refreshAll();
+  };
+}
+
+connectWs();
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>

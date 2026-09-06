@@ -1,0 +1,99 @@
+# Plain-HTTP reverse proxy on :9000. TLS is expected to be terminated
+# upstream (ngrok tunnel, host reverse proxy, or managed edge — see
+# devkits/README.md "Hosting the site"). auto_https off keeps Caddy
+# from probing :80 or attempting Let's Encrypt issuance for the
+# bare-port site addresses.
+{
+    auto_https off
+}
+
+# Each Beckn participant gets its own hostname matching its subscriberId in
+# the dedi registry. Containers resolve these via Docker network aliases on
+# the beckn-router service (see compose). Standard Beckn paths (/bap/receiver,
+# /bpp/receiver, etc.) live under each hostname — multi-host routing matches
+# how a production Beckn deployment carves up the namespace.
+
+http://buyerapp.example.com:9000 {
+    reverse_proxy onix-buyerapp:8081
+}
+http://sellerapp.example.com:9000 {
+    reverse_proxy onix-sellerapp:8082
+}
+http://seller-discom-ledger.example.com:9000 {
+    reverse_proxy onix-ledger-sellerdiscom:8083
+}
+http://buyer-discom-ledger.example.com:9000 {
+    reverse_proxy onix-ledger-buyerdiscom:8084
+}
+http://sellerdiscom.example.com:9000 {
+    reverse_proxy onix-sellerdiscom:8086
+}
+http://buyerdiscom.example.com:9000 {
+    reverse_proxy onix-buyerdiscom:8085
+}
+
+# Catch-all on :9000 — handles two routing modes:
+#
+# 1. Participant-slug mode (single ngrok tunnel, multi-participant devkit):
+#    Prefix the path with a participant slug so Caddy can disambiguate.
+#    The slug is stripped before proxying, so each onix still sees standard
+#    Beckn paths (/bap/receiver, /bpp/caller, etc.).
+#    e.g. https://<ngrok>/sellerapp/bpp/receiver/status
+#
+# 2. Direct-path mode (single-participant local or cloud deployment,
+#    or multi-tunnel ngrok where each participant has its own URL):
+#    Standard Beckn paths (/bap/* → buyerapp, /bpp/* → sellerapp) are
+#    forwarded as-is — no slug required.
+#    e.g. https://<ngrok>/bpp/receiver/status
+#
+# Slug routes are matched first; /bap/* and /bpp/* are the fallback.
+:9000 {
+    # --- Participant-slug routes (multi-participant devkit) ---
+    @buyerapp path /buyerapp /buyerapp/*
+    handle @buyerapp {
+        uri strip_prefix /buyerapp
+        reverse_proxy onix-buyerapp:8081
+    }
+    @sellerapp path /sellerapp /sellerapp/*
+    handle @sellerapp {
+        uri strip_prefix /sellerapp
+        reverse_proxy onix-sellerapp:8082
+    }
+    @sellerDiscomLedger path /seller-discom-ledger /seller-discom-ledger/*
+    handle @sellerDiscomLedger {
+        uri strip_prefix /seller-discom-ledger
+        reverse_proxy onix-ledger-sellerdiscom:8083
+    }
+    @buyerDiscomLedger path /buyer-discom-ledger /buyer-discom-ledger/*
+    handle @buyerDiscomLedger {
+        uri strip_prefix /buyer-discom-ledger
+        reverse_proxy onix-ledger-buyerdiscom:8084
+    }
+    @sellerDiscomActor path /sellerdiscom /sellerdiscom/*
+    handle @sellerDiscomActor {
+        uri strip_prefix /sellerdiscom
+        reverse_proxy onix-sellerdiscom:8086
+    }
+    @buyerDiscomActor path /buyerdiscom /buyerdiscom/*
+    handle @buyerDiscomActor {
+        uri strip_prefix /buyerdiscom
+        reverse_proxy onix-buyerdiscom:8085
+    }
+
+    # --- Standard Beckn paths (single-participant / direct-path mode) ---
+    # /bap/* → buyerapp onix; /bpp/* → sellerapp onix.
+    # In devkit: ledger participants need a slug above to avoid ambiguity
+    # since they also expose /bpp/* endpoints.
+    @bap path /bap /bap/*
+    handle @bap {
+        reverse_proxy onix-buyerapp:8081
+    }
+    @bpp path /bpp /bpp/*
+    handle @bpp {
+        reverse_proxy onix-sellerapp:8082
+    }
+
+    handle {
+        respond "beckn-router ok" 200
+    }
+}

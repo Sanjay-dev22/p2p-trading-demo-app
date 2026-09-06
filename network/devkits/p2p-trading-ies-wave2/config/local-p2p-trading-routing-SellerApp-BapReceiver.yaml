@@ -1,0 +1,12 @@
+# SellerApp BAP-Receiver routing: incoming /on_status (from sellerDiscom or
+# from buyer-peer) → delivered to sandbox-sellerapp's bap-style webhook.
+# The degledgerrecorder step in the receiver does the cross-side forwarding
+# (Rule 2) based on context.bppId; this routing only handles local delivery.
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://sandbox-sellerapp:3002/api/bap-webhook"
+    endpoints:
+      - on_status
+      - on_confirm

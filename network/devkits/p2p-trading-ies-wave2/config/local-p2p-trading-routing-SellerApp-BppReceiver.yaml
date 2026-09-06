@@ -1,0 +1,19 @@
+# SellerApp BPP-Receiver routing: BAP-originated requests → seller-app
+# (p2p-trading-app/seller-app, a real Node app run as a plain host process,
+# not a container — reached via Docker Desktop's host.docker.internal DNS
+# name. Was sandbox-sellerapp, the fidedocker/sandbox-2.0 fixture-replay
+# stub; see docker-compose.yml for the commented-out original.)
+# Only request actions (select, init, confirm, status, update, cancel) land
+# here per Beckn semantics. Responses (on_*) come back at /bap/receiver.
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://host.docker.internal:4002/api/webhook"
+    endpoints:
+      - select
+      - init
+      - confirm
+      - status
+      - update
+      - cancel

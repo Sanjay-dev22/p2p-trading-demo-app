@@ -1,0 +1,20 @@
+# OPA policy config consumed by the `opapolicychecker` plugin.
+#
+# Single-policy setup: only `default:` is defined, so every message —
+# regardless of `context.networkId` — is evaluated against the same rego
+# file. Replace with per-network entries (keyed by full networkId such as
+# `nfh.global/testnet-deg`) as the P2P trading network matures and
+# distinct networks need distinct rules.
+#
+# Plugin docs:
+#   https://github.com/beckn/beckn-onix/blob/main/pkg/plugin/implementation/opapolicychecker/README.md
+
+# The rego is fetched from the repository's main branch over HTTP (type: file
+# resolves both local paths and remote URLs). specification/policies/ remains
+# the single source of truth; no docker-compose mount is required.
+
+networkPolicies:
+  default:
+    type: file
+    location: https://raw.githubusercontent.com/beckn/DEG/refs/heads/main/specification/policies/p2p-trading-ies-wave2-networkpolicy.rego
+    query: data.deg.policy.p2p_trading_network.violations

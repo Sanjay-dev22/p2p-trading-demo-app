@@ -1,0 +1,78 @@
+mode: selective
+
+patterns:
+  email:
+    maskType: replace
+    mask: "***@***.***"
+  phone:
+    maskType: last4
+  sensitive:
+    maskType: replace
+    mask: "[REDACTED]"
+  account:
+    maskType: last4
+
+maskRules:
+  - keys: [email, emailAddress, supportEmail, providerEmail]
+    pattern: email
+  - keys: [phone, telephone, mobile, supportPhone, providerPhone]
+    pattern: phone
+  - keys: [displayName, fullName, accountHolderName]
+    pattern: sensitive
+  - keys: [accountNumber, vpa]
+    pattern: account
+  - keys: [paymentURL, txnRef, paidAt]
+    pattern: sensitive
+
+pathOverrides: []
+
+selectedFields:
+  default:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.networkId
+    - context.domain
+    - context.bapId
+    - context.bppId
+    - message.contract.id
+    - message.contract.status
+  confirm:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.networkId
+    - context.bapId
+    - context.bppId
+    - message.contract.id
+    - message.contract.status
+    - message.contract.commitments
+  on_confirm:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.networkId
+    - context.bapId
+    - context.bppId
+    - message.contract.id
+    - message.contract.status
+    - message.contract.commitments
+  status:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.networkId
+    - context.bapId
+    - context.bppId
+    - message.contract.id
+    - message.contract.status
+  on_status:
+    - context.transactionId
+    - context.messageId
+    - context.action
+    - context.networkId
+    - context.bapId
+    - context.bppId
+    - message.contract.id
+    - message.contract.status
+    - message.contract.commitments

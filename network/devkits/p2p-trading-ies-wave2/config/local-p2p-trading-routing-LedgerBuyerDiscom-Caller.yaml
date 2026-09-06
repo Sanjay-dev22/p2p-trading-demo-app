@@ -1,0 +1,12 @@
+# BuyerDiscom /bpp/caller routing: on_status (and any future on_* responses)
+# from the buyerDiscom ledger → context.bapUri. Pure Beckn semantics —
+# targetType:bap reads the BAP-side address out of the message body, which
+# is typically buyer/bap/receiver for the canonical cascade (or any peer
+# /bap/receiver for direct testing via the BUYERDISCOMLEDGER postman
+# collection).
+routingRules:
+  - version: "2.0.0"
+    targetType: "bap"
+    endpoints:
+      - on_status
+      - on_confirm

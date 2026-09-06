@@ -1,0 +1,122 @@
+{
+  "context": {
+    "networkId": "indiaenergystack.in/test-ies-p2p-trading-network",
+    "version": "2.0.0",
+    "action": "on_status",
+    "bapId": "buyerapp.example.com",
+    "bapUri": "http://buyerapp.example.com:9000/bap/receiver",
+    "bppId": "buyer-discom-ledger.example.com",
+    "bppUri": "http://buyer-discom-ledger.example.com:9000/bpp/caller",
+    "transactionId": "1268c204-675b-4adb-9321-b08231b147b2",
+    "messageId": "d491e73c-8b2f-4c90-ae12-3f76c09d5e41",
+    "timestamp": "2026-04-26T07:00:00Z",
+    "schemaContext": [
+      "https://schema.nfh.global/EnergyTradeOffer/v2.0/context.jsonld",
+      "https://schema.nfh.global/DEGContract/v2.0/context.jsonld",
+      "https://schema.nfh.global/EnergyCustomer/v2.0/context.jsonld",
+      "https://schema.nfh.global/RevenueFlow/v2.0/context.jsonld",
+      "https://schema.nfh.global/BecknTimeSeries/v1.0/context.jsonld",
+      "https://schema.nfh.global/DiscomLedgerProvider/v1.0/context.jsonld",
+      "https://schema.nfh.global/SettlementTerm/v2.0/context.jsonld"
+    ]
+  },
+  "message": {
+    "contract": {
+      "id": "contract-p2p-001",
+      "status": {"code": "COMPLETE"},
+      "commitments": [
+        {
+          "id": "commitment-p2p-001",
+          "status": {"descriptor": {"code": "CLOSED"}},
+          "resources": [
+            {
+              "id": "energy-resource-solar-001",
+              "descriptor": {"name": "Solar energy slot - 2026-04-26 10:00-12:00 IST"},
+              "quantity": {"@type": "Quantity", "unitCode": "KWH", "unitQuantity": 35.0},
+              "resourceAttributes": {"@context": "https://schema.nfh.global/EnergyResource/v2.0/context.jsonld", "@type": "EnergyResource", "type": "SOLAR", "id": "TEST_METER_SELLER_001"}
+            }
+          ],
+          "offer": {"id": "offer-p2p-001", "resourceIds": ["energy-resource-solar-001"]},
+          "commitmentAttributes": {
+            "@context": "https://schema.nfh.global/BecknTimeSeries/v1.0/context.jsonld",
+            "@type": "TimeSeries",
+            "intervalPeriod": {"start": "2026-04-26T04:30:00Z", "duration": "PT1H"},
+            "payloadDescriptors": [
+              {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "PRICE_PER_KWH", "currency": "INR", "insertedBy": "sellerPlatform"},
+              {"objectType": "EVENT_PAYLOAD_DESCRIPTOR", "payloadType": "REQUESTED_QTY", "units": "KWH", "insertedBy": "buyerPlatform"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "BUYER_DISCOM_ALLOC", "units": "KWH", "insertedBy": "buyerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "BUYER_DISCOM_STATUS", "units": "STRING", "insertedBy": "buyerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "SELLER_DISCOM_ALLOC", "units": "KWH", "insertedBy": "sellerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "SELLER_DISCOM_STATUS", "units": "STRING", "insertedBy": "sellerDiscom"},
+              {"objectType": "REPORT_PAYLOAD_DESCRIPTOR", "payloadType": "FINAL_ALLOC", "units": "KWH", "insertedBy": "sellerDiscom"}
+            ],
+            "intervals": [
+              {"id": 0, "payloads": [{"type": "PRICE_PER_KWH", "values": [12.5]}, {"type": "REQUESTED_QTY", "values": [20.5]}, {"type": "BUYER_DISCOM_ALLOC", "values": [18.5]}, {"type": "BUYER_DISCOM_STATUS", "values": ["COMPLETED"]}, {"type": "SELLER_DISCOM_ALLOC", "values": [19.2]}, {"type": "SELLER_DISCOM_STATUS", "values": ["COMPLETED"]}, {"type": "FINAL_ALLOC", "values": [18.5]}]},
+              {"id": 1, "payloads": [{"type": "PRICE_PER_KWH", "values": [14.5]}, {"type": "REQUESTED_QTY", "values": [15.5]}, {"type": "BUYER_DISCOM_ALLOC", "values": [14.2]}, {"type": "BUYER_DISCOM_STATUS", "values": ["COMPLETED"]}, {"type": "SELLER_DISCOM_ALLOC", "values": [14.7]}, {"type": "SELLER_DISCOM_STATUS", "values": ["COMPLETED"]}, {"type": "FINAL_ALLOC", "values": [14.2]}]}
+            ]
+          }
+        }
+      ],
+      "contractAttributes": {
+        "@context": "https://schema.nfh.global/DEGContract/v2.0/context.jsonld",
+        "@type": "DEGContract",
+        "roles": [
+          {"role": "buyerPlatform", "participantId": "buyerapp.example.com"},
+          {"role": "sellerPlatform", "participantId": "sellerapp.example.com"},
+          {"role": "buyerDiscom", "participantId": "TEST_DISCOM_BUYER"},
+          {"role": "sellerDiscom", "participantId": "TEST_DISCOM_SELLER"}
+        ],
+        "policy": {"url": "https://api.dedi.global/dedi/lookup/indiaenergystack.in/ies-rulesets/p2p-trading-ies-contractpolicy-common", "queryPath": "data.deg.contracts.p2p_trading"}
+      },
+      "participants": [
+        {"id": "sellerapp.example.com", "participantAttributes": {"@context": "https://schema.nfh.global/EnergyCustomer/v2.0/context.jsonld", "@type": "EnergyCustomer", "meterId": "TEST_METER_SELLER_001", "utilityCustomerId": "TEST_CUST_SELLER_001", "platformUrl": "http://sellerapp.example.com:9000"}},
+        {"id": "buyerapp.example.com", "participantAttributes": {"@context": "https://schema.nfh.global/EnergyCustomer/v2.0/context.jsonld", "@type": "EnergyCustomer", "meterId": "TEST_METER_BUYER_001", "utilityCustomerId": "TEST_CUST_BUYER_001", "platformUrl": "http://buyerapp.example.com:9000"}},
+        {"id": "TEST_DISCOM_BUYER", "participantAttributes": {"@context": "https://schema.nfh.global/DiscomLedgerProvider/v1.0/context.jsonld", "@type": "DiscomLedgerProvider", "discomId": "buyer-discom.example.com", "discomUri": "http://buyer-discom.example.com:9000", "ledgerId": "buyer-discom-ledger.example.com", "ledgerUri": "http://buyer-discom-ledger.example.com:9000"}},
+        {"id": "TEST_DISCOM_SELLER", "participantAttributes": {"@context": "https://schema.nfh.global/DiscomLedgerProvider/v1.0/context.jsonld", "@type": "DiscomLedgerProvider", "discomId": "seller-discom.example.com", "discomUri": "http://seller-discom.example.com:9000", "ledgerId": "seller-discom-ledger.example.com", "ledgerUri": "http://seller-discom-ledger.example.com:9000"}}
+      ],
+      "consideration": [
+        {
+          "id": "payment-term-p2p-001",
+          "considerationAttributes": {
+            "@context": "https://schema.nfh.global/SettlementTerm/v2.0/context.jsonld",
+            "@type": "SettlementTerm",
+            "amount": {"currency": "INR", "value": 450.26},
+            "settlementStatus": "COMPLETE",
+            "paymentTrigger": "ON_FULFILLMENT",
+            "payTo": {"accountHolderName": "Seller Platform Pvt Ltd", "accountNumber": "0012345678901", "branchCode": "HDFC0001234", "bankName": "HDFC Bank"},
+            "acceptedPaymentMethods": ["BANK_TRANSFER"]
+          }
+        },
+        {
+          "id": "auto-settlement-flows",
+          "considerationAttributes": {
+            "@context": "https://schema.nfh.global/RevenueFlow/v2.0/context.jsonld",
+            "@type": "RevenueFlow",
+            "revenueFlows": [
+              {"role": "sellerPlatform", "value": 437.15, "currency": "INR", "description": "Energy sale proceeds (18.5 kWh × ₹12.5 + 14.2 kWh × ₹14.5)"},
+              {"role": "buyerPlatform", "value": -437.15, "currency": "INR", "description": "Energy purchase cost (18.5 kWh × ₹12.5 + 14.2 kWh × ₹14.5)"}
+            ]
+          }
+        }
+      ],
+      "settlements": [
+        {
+          "id": "settlement-p2p-001",
+          "considerationId": "payment-term-p2p-001",
+          "status": "COMPLETE",
+          "settlementAttributes": {
+            "@context": "https://schema.nfh.global/SettlementTerm/v2.0/context.jsonld",
+            "@type": "SettlementTerm",
+            "settlementFor": "Solar energy P2P trade: 32.7 kWh delivered on 2026-04-26 10:00-12:00 IST",
+            "energyValue": 437.15,
+            "sellerPlatformFee": 13.11,
+            "buyerPlatformFee": 8.74,
+            "totalPayable": 459.0,
+            "paidAt": "2026-04-26T07:30:00Z",
+            "txnRef": "TXN-P2P-001-SETTLED"
+          }
+        }
+      ]
+    }
+  }
+}
