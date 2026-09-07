@@ -50,6 +50,16 @@ services:
       RABBITMQ_ADDR: rabbitmq:5672
       RABBITMQ_USER: admin
       RABBITMQ_PASS: admin123
+      # On machines where HTTP_PROXY/HTTPS_PROXY get set system-wide
+      # (common on corporate laptops), Go's HTTP client picks that up and
+      # sends every outbound request through it — including these local,
+      # Docker-only test hostnames, which the corporate proxy has no way
+      # to resolve (confirmed live: Docker's own internal DNS resolves
+      # them fine; the request was still leaving to a real corporate
+      # proxy anyway). NO_PROXY tells it to skip the proxy for exactly
+      # these — harmless no-op on a machine with no proxy configured.
+      NO_PROXY: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
+      no_proxy: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
     volumes:
       - ../config:/app/config
       - ../schemas:/app/schemas
@@ -115,6 +125,8 @@ services:
       RABBITMQ_ADDR: rabbitmq:5672
       RABBITMQ_USER: admin
       RABBITMQ_PASS: admin123
+      NO_PROXY: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
+      no_proxy: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
     volumes:
       - ../config:/app/config
       - ../schemas:/app/schemas
@@ -187,6 +199,8 @@ services:
       - "8083:8083"
     environment:
       CONFIG_FILE: "/app/config/local-p2p-trading-ledger-sellerdiscom.yaml"
+      NO_PROXY: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
+      no_proxy: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
     volumes:
       - ../config:/app/config
       - ../schemas:/app/schemas
@@ -233,6 +247,8 @@ services:
       - "8084:8084"
     environment:
       CONFIG_FILE: "/app/config/local-p2p-trading-ledger-buyerdiscom.yaml"
+      NO_PROXY: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
+      no_proxy: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
     volumes:
       - ../config:/app/config
       - ../schemas:/app/schemas
@@ -293,6 +309,8 @@ services:
       - "8085:8085"
     environment:
       CONFIG_FILE: "/app/config/local-p2p-trading-buyerdiscom.yaml"
+      NO_PROXY: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
+      no_proxy: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
     volumes:
       - ../config:/app/config
       - ../schemas:/app/schemas
@@ -328,6 +346,8 @@ services:
       - "8086:8086"
     environment:
       CONFIG_FILE: "/app/config/local-p2p-trading-sellerdiscom.yaml"
+      NO_PROXY: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
+      no_proxy: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
     volumes:
       - ../config:/app/config
       - ../schemas:/app/schemas
