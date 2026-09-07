@@ -61,7 +61,7 @@
 
   <div class="panel">
     <h2>Buy directly</h2>
-    <div class="hint">If the offer you want isn't listed above yet, enter it directly — same real <code>init</code> call either way.</div>
+    <div class="hint">If the offer you want isn't listed above yet, paste its real Offer ID here — copy it from the "My published offers" list on the <strong>Seller Platform</strong> page (it looks like <code>offer-demo-xxxxxxxx</code>, not a made-up value). Same real <code>init</code> call either way.</div>
     <form id="buyForm">
       <div class="field"><label>Offer ID</label><input type="text" name="offerId" placeholder="offer-demo-xxxxxxxx" required></div>
       <div class="field"><label>Quantity (kWh)</label><input type="number" step="0.1" name="quantityKwh" value="15" required></div>
@@ -158,7 +158,12 @@ $("#buyForm").addEventListener("submit", (e) => {
 $("#discoverBtn").addEventListener("click", async () => {
   const res = await fetch("/api/discover", { method: "POST" });
   const body = await res.json();
-  if (!res.ok) { toast("Discover failed: " + (body.error || res.status), true); return; }
+  if (!res.ok) {
+    var why = (body.detail && (body.detail.message?.error?.message || JSON.stringify(body.detail))) || body.raw || res.status;
+    toast("Discover failed: " + why, true);
+    console.error("discover failed — full detail:", body);
+    return;
+  }
   toast("discover sent — results (if any) will appear shortly");
 });
 

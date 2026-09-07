@@ -59,7 +59,10 @@ app.post("/api/discover", async (req, res) => {
   try {
     const { context, message } = beckn.buildDiscover();
     const result = await beckn.postToOnix("/bap/caller/discover", { context, message });
-    if (!result.ok) return res.status(result.status).json({ error: "onix rejected discover", detail: result.json });
+    if (!result.ok) {
+      console.error("discover rejected by onix:", result.status, result.text);
+      return res.status(result.status || 502).json({ error: "onix rejected discover", detail: result.json, raw: result.text });
+    }
     res.json({ ok: true });
   } catch (err) {
     console.error("discover failed:", err);
@@ -83,13 +86,21 @@ app.post("/api/buy", async (req, res) => {
     const result = await beckn.postToOnix("/bap/caller/init", { context, message });
 
     if (!result.ok) {
-      console.error("init rejected by onix:", result.status, JSON.stringify(result.json));
+      console.error("init rejected by onix:", result.status, result.text);
       // Real, live policy rejection (e.g. buyerDiscomId = TEST_OUTSIDE_DISCOM) —
       // the contractpolicyenforcer step on onix-sellerapp NACKs synchronously.
+      // Fall back through: the real NACK's human-readable message, then the
+      // raw response body (covers non-JSON errors — proxies, timeouts,
+      // onix-internal errors), then finally the HTTP status itself — never
+      // silently store nothing (that produced a bare "null" toast before).
+      const errorMessage =
+        result.json?.message?.error?.message ||
+        (result.text && result.text.trim()) ||
+        `onix returned HTTP ${result.status || "(no response)"} with no readable body`;
       db.prepare(
         `INSERT INTO trades (transaction_id, offer_id, bpp_id, buyer_discom, requested_qty, price_per_kwh, status, error_message, raw_context, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-      ).run(context.transactionId, offerId, beckn.SELLER_ID, buyerDiscomId, quantityKwh, pricePerKwh, "REJECTED", result.json?.message?.error?.message || JSON.stringify(result.json), JSON.stringify({ context, message }), now, now);
+      ).run(context.transactionId, offerId, beckn.SELLER_ID, buyerDiscomId, quantityKwh, pricePerKwh, "REJECTED", errorMessage, JSON.stringify({ context, message }), now, now);
       const rejected = tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId));
       broadcast("rejected", rejected);
       return res.status(200).json({ ok: false, rejected: true, trade: rejected });

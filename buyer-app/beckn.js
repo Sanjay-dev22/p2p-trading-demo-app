@@ -48,18 +48,27 @@ function buildAck(context) {
 
 async function postToOnix(pathSuffix, body) {
   const url = `${ONIX_BUYER_BASE}${pathSuffix}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    // The request never got a response at all (connection refused, DNS
+    // failure, timeout) — surface that plainly instead of throwing an
+    // unhandled rejection the caller has to guess about.
+    return { status: 0, ok: false, json: null, text: `network error reaching ${url}: ${err.message || err}` };
+  }
+  const rawText = await res.text().catch(() => "");
   let json = null;
   try {
-    json = await res.json();
+    json = rawText ? JSON.parse(rawText) : null;
   } catch (_) {
-    /* no body / non-JSON */
+    /* body wasn't JSON — rawText itself is kept below so nothing is lost */
   }
-  return { status: res.status, ok: res.ok, json };
+  return { status: res.status, ok: res.ok, json, text: rawText };
 }
 
 function buildDiscover() {

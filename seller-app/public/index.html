@@ -66,6 +66,12 @@
   </div>
 
   <div class="panel">
+    <h2>My published offers</h2>
+    <div class="hint" style="color:var(--muted);font-size:12px;margin:-6px 0 10px">Give the buyer this exact Offer ID — that's what goes into "Buy directly" on their page.</div>
+    <div class="list" id="offers"><div class="empty">Nothing published yet.</div></div>
+  </div>
+
+  <div class="panel">
     <h2>Incoming requests</h2>
     <div class="list" id="requests"><div class="empty">No incoming requests yet.</div></div>
   </div>
@@ -95,13 +101,37 @@ function badge(status) {
 }
 
 async function refreshAll() {
-  const [trades, earnings] = await Promise.all([
+  const [offers, trades, earnings] = await Promise.all([
+    fetch("/api/offers").then((r) => r.json()),
     fetch("/api/trades").then((r) => r.json()),
     fetch("/api/earnings").then((r) => r.json()),
   ]);
+  renderOffers(offers);
   renderRequests(trades.filter((t) => t.status === "PENDING_ACCEPT"));
   renderTrades(trades.filter((t) => t.status !== "PENDING_ACCEPT"));
   $("#earnings").textContent = "₹" + Number(earnings.total).toFixed(2);
+}
+
+function renderOffers(list) {
+  const el = $("#offers");
+  if (!list.length) { el.innerHTML = '<div class="empty">Nothing published yet.</div>'; return; }
+  el.innerHTML = list.map((o) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary" style="font-family:monospace">${o.id}</div>
+        <div class="secondary">${o.quantity_kwh} kWh @ ₹${o.price_per_kwh}/kWh</div>
+      </div>
+      <button class="secondary" onclick="copyOfferId('${o.id}', this)">Copy ID</button>
+    </div>`).join("");
+}
+
+function copyOfferId(id, btn) {
+  var done = function () { var t = btn.textContent; btn.textContent = "Copied!"; setTimeout(() => (btn.textContent = t), 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(id).then(done).catch(() => toast("Couldn't copy — select and copy manually: " + id));
+  } else {
+    toast("Copy not available in this browser — offer ID: " + id);
+  }
 }
 
 function renderRequests(list) {

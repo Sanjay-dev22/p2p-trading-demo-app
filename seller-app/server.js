@@ -72,7 +72,8 @@ app.post("/api/publish", async (req, res) => {
 
     const result = await beckn.postToOnix("/bpp/caller/catalog/publish", { context, message });
     if (!result.ok) {
-      return res.status(result.status).json({ error: "onix rejected the publish", detail: result.json });
+      console.error("publish rejected by onix:", result.status, result.text);
+      return res.status(result.status || 502).json({ error: "onix rejected the publish", detail: result.json, raw: result.text });
     }
 
     const publishedAt = beckn.nowIso();
@@ -160,7 +161,7 @@ app.post("/api/accept/:transactionId", async (req, res) => {
     const stored = JSON.parse(row.raw_context);
     const onInit = beckn.buildOnInit(stored.context, stored.message.contract);
     const result = await beckn.postToOnix("/bpp/caller/on_init", onInit);
-    if (!result.ok) return res.status(result.status).json({ error: "onix rejected on_init", detail: result.json });
+    if (!result.ok) { console.error("on_init rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: "onix rejected on_init", detail: result.json, raw: result.text }); }
 
     const now = beckn.nowIso();
     db.prepare("UPDATE trades SET status=?, raw_context=?, updated_at=? WHERE transaction_id=?").run("AWAITING_CONFIRM", JSON.stringify(onInit), now, transactionId);
@@ -192,7 +193,7 @@ app.post("/api/deliver/:transactionId", async (req, res) => {
 
     const onStatus = beckn.buildOnStatusSettled(stored.context, stored.message.contract, { finalAlloc, pricePerKwh, settlementAmount, txnRef });
     const result = await beckn.postToOnix("/bpp/caller/on_status", onStatus);
-    if (!result.ok) return res.status(result.status).json({ error: "onix rejected on_status", detail: result.json });
+    if (!result.ok) { console.error("on_status rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: "onix rejected on_status", detail: result.json, raw: result.text }); }
 
     const now = beckn.nowIso();
     db.prepare("UPDATE trades SET status=?, final_alloc=?, settlement_amount=?, raw_context=?, updated_at=? WHERE transaction_id=?").run(
