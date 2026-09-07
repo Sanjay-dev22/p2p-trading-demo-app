@@ -5,3 +5,8 @@ node_modules/
 *.db-shm
 *.log
 .DS_Store
+# Per-machine tunnel URL for discover to work when onix-buyerapp is exposed
+# publicly (see buyer-app/beckn.js) — ephemeral, rotates every restart of
+# cloudflared, never something to commit.
+buyer-app/public-bap-uri.txt
+buyer-app/start-with-tunnel.sh

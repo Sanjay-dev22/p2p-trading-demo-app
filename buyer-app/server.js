@@ -7,6 +7,7 @@ const { WebSocketServer } = require("ws");
 const path = require("path");
 const db = require("./db");
 const beckn = require("./beckn");
+const ledger = require("./ledger");
 
 const PORT = process.env.PORT || 4001;
 // The one real seller we can actually transact with — its own REST API is
@@ -104,6 +105,30 @@ async function resolveOffer(offerId) {
 
 app.get("/api/resolve-offer/:offerId", async (req, res) => {
   res.json(await resolveOffer(req.params.offerId));
+});
+
+// ---------- Network Dashboard: real, ledger-verified trades ----------
+// Cached briefly so the dashboard can poll every few seconds without
+// re-signing and re-querying the real external ledger on every tick.
+let ledgerCache = { at: 0, data: null, error: null };
+const LEDGER_CACHE_MS = 15000;
+app.get("/api/network/ledger-trades", async (req, res) => {
+  try {
+    if (!ledgerCache.data || Date.now() - ledgerCache.at > LEDGER_CACHE_MS) {
+      const records = await ledger.fetchLedgerTrades({});
+      ledgerCache = { at: Date.now(), data: ledger.groupTradesByTransaction(records), error: null };
+    }
+    res.json({ trades: ledgerCache.data, ledgerUrl: ledger.LEDGER_URL, asOf: new Date(ledgerCache.at).toISOString() });
+  } catch (err) {
+    console.error("ledger-trades failed:", err.message || err);
+    // Serve the last good cache (if any) rather than a hard failure —
+    // a transient real network hiccup shouldn't blank out the dashboard
+    // mid-demo. Only return an error if we've never had one.
+    if (ledgerCache.data) {
+      return res.json({ trades: ledgerCache.data, ledgerUrl: ledger.LEDGER_URL, asOf: new Date(ledgerCache.at).toISOString(), staleWarning: String(err.message || err) });
+    }
+    res.status(502).json({ error: String(err.message || err) });
+  }
 });
 
 // ---------- Reset: wipe this platform's own data for a fresh demo run ----------

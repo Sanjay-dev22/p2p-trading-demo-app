@@ -15,6 +15,38 @@ const SELLER_DISCOM_ID = "TEST_DISCOM_SELLER";
 const POLICY_URL = "https://api.dedi.global/dedi/lookup/indiaenergystack.in/ies-rulesets/p2p-trading-ies-contractpolicy-common";
 const POLICY_QUERY_PATH = "data.deg.contracts.p2p_trading";
 
+// The real external DEG ledger — where the *old* scripted demo's trades
+// actually landed (see responses/sellerapp/on_init.json /
+// on_confirm.json's own `{{SELLER_LEDGER_ID:-...}}` /
+// `{{SELLER_LEDGER_URI:-...}}` template placeholders: substituted with
+// exactly these two real values, confirmed via docker-compose.yml's own
+// commented-out SELLER_LEDGER_ID/SELLER_LEDGER_URI). This app's buyer
+// originates the whole contract with the *local* discom-ledger sandbox
+// hostnames for both sides (see buyer-app/beckn.js's buildInit) — without
+// this override, the seller's own leg would stay pointed at the local
+// sandbox forever, and a completed trade would never reach the real,
+// independently-queryable ledger at all.
+const SELLER_LEDGER_ID = "ies-p2p-energy-ledger.beckn.io";
+const SELLER_LEDGER_URI = "https://ies-p2p-energy-ledger.beckn.io";
+
+// Overrides only this seller's own discom-ledger declaration (never the
+// buyer's — the old demo never touched that side either, and it isn't
+// this platform's place to declare where the *buyer's* discom records
+// itself) so the real degledgerrecorder plugin cascades this trade's
+// seller-side leg to the real external ledger instead of the local
+// sandbox. Applied once, at on_init (the seller's first response) — every
+// later message in the lifecycle just clones that same contract forward,
+// so the override naturally persists through on_confirm and on_status too.
+function pointSellerDiscomAtRealLedger(contract) {
+  const participants = contract?.participants || [];
+  const sellerDiscom = participants.find((p) => p.id === SELLER_DISCOM_ID);
+  if (sellerDiscom?.participantAttributes) {
+    sellerDiscom.participantAttributes.ledgerId = SELLER_LEDGER_ID;
+    sellerDiscom.participantAttributes.ledgerUri = SELLER_LEDGER_URI;
+  }
+  return contract;
+}
+
 const ONIX_SELLER_BASE = process.env.ONIX_SELLER_URL || "http://localhost:8082";
 
 // Union of every schemaContext URL seen across the real example fixtures —
@@ -161,6 +193,7 @@ function buildPublishCatalog({ offerId, quantityKwh, pricePerKwh }) {
 // on-init-response.json.
 function buildOnInit(originalCtx, originalContract) {
   const contract = JSON.parse(JSON.stringify(originalContract));
+  pointSellerDiscomAtRealLedger(contract);
   contract.status = { code: "DRAFT" };
   contract.commitments[0].status = { descriptor: { code: "DRAFT" } };
   contract.settlements = [
@@ -184,6 +217,10 @@ function buildOnInit(originalCtx, originalContract) {
 // on_confirm: the trade goes ACTIVE. Mirrors on-confirm-response.json.
 function buildOnConfirm(originalCtx, originalContract) {
   const contract = JSON.parse(JSON.stringify(originalContract));
+  // Idempotent — already applied at on_init and simply carried forward by
+  // the buyer's own confirm echo, but reapplied here too in case this is
+  // ever called on a contract that skipped that step.
+  pointSellerDiscomAtRealLedger(contract);
   contract.status = { code: "ACTIVE" };
   contract.commitments[0].status = { descriptor: { code: "ACTIVE" } };
   contract.id = "contract-p2p-001";
@@ -201,6 +238,10 @@ function buildOnConfirm(originalCtx, originalContract) {
 // using the same formula the real linked .rego policy evaluates.
 function buildOnStatusSettled(originalCtx, originalContract, { finalAlloc, pricePerKwh, settlementAmount, txnRef }) {
   const contract = JSON.parse(JSON.stringify(originalContract));
+  // Same idempotent override as buildOnInit/buildOnConfirm — the real
+  // ledger cascade plugin may read participants fresh off each message
+  // rather than relying on state carried from an earlier step.
+  pointSellerDiscomAtRealLedger(contract);
   contract.status = { code: "COMPLETE" };
   contract.commitments[0].status = { descriptor: { code: "CLOSED" } };
   const interval0 = contract.commitments[0].commitmentAttributes.intervals[0];

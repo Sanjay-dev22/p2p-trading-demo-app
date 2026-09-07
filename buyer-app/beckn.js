@@ -78,9 +78,20 @@ async function postToOnix(pathSuffix, body) {
 // e.g. via `cloudflared tunnel --url http://localhost:8081`), discover uses
 // that instead; every other message keeps using the local address, since
 // those only ever need to reach our own local peer, which resolves fine.
-const PUBLIC_BAP_URI = process.env.PUBLIC_BAP_URI
-  ? `${process.env.PUBLIC_BAP_URI.replace(/\/$/, "")}/bap/receiver`
-  : null;
+// Also readable from a local file (public-bap-uri.txt, gitignored) as a
+// fallback to the env var — lets this be set once on disk instead of
+// having to be passed on every process launch.
+function readPublicBapUriFile() {
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    return fs.readFileSync(path.join(__dirname, "public-bap-uri.txt"), "utf8").trim() || null;
+  } catch (_) {
+    return null;
+  }
+}
+const RAW_PUBLIC_BASE = process.env.PUBLIC_BAP_URI || readPublicBapUriFile();
+const PUBLIC_BAP_URI = RAW_PUBLIC_BASE ? `${RAW_PUBLIC_BASE.replace(/\/$/, "")}/bap/receiver` : null;
 
 function buildDiscover() {
   const transactionId = uuid();

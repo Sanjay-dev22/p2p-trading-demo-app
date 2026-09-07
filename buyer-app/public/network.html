@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Network Dashboard — P2P Trading Demo</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121822; --panel2: #182233; --border: #263349;
+    --text: #e8edf5; --muted: #8fa1bd; --accent: #5aa9ff; --amber: #f5b942; --red: #ff6b6b; --green: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: 0.02em; }
+  header .role { color: var(--accent); font-weight: 600; }
+  header a { color: var(--muted); font-size: 13px; text-decoration: none; }
+  header a:hover { color: var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; grid-template-columns: 1fr; }
+  @media (min-width: 880px) { main { grid-template-columns: 1fr 1fr; align-items: start; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 6px; }
+  .panel .sub { font-size: 12px; color: var(--muted); margin: 0 0 14px; }
+  .stat-row { display: flex; gap: 18px; margin-bottom: 14px; flex-wrap: wrap; }
+  .stat { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; }
+  .stat .num { font-size: 20px; font-weight: 700; }
+  .stat .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .list { display: flex; flex-direction: column; gap: 8px; max-height: 560px; overflow-y: auto; }
+  .row { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 11px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .row.mine { border-color: var(--accent); box-shadow: inset 0 0 0 1px rgba(90,169,255,0.25); }
+  .row .meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .row .meta .primary { font-weight: 600; }
+  .row .meta .secondary { font-size: 12px; color: var(--muted); word-break: break-word; }
+  .badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; white-space: nowrap; }
+  .badge.mine { background: rgba(90,169,255,0.2); color: var(--accent); }
+  .badge.other { background: rgba(143,161,189,0.15); color: var(--muted); }
+  .badge.verified { background: rgba(74,222,128,0.15); color: var(--green); }
+  .digest { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 10.5px; color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 14px; line-height: 1.5; }
+  .conn { font-size: 11px; color: var(--muted); }
+  .conn.up::before { content: "● "; color: var(--accent); }
+  .conn.down::before { content: "● "; color: var(--red); }
+  .err-banner { background: rgba(255,107,107,0.1); border: 1px solid var(--red); color: var(--red); border-radius: 8px; padding: 8px 12px; font-size: 12px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌐 <span class="role">Network Dashboard</span> — indiaenergystack.in/test-ies-p2p-trading-network</h1>
+  <div style="display:flex;align-items:center;gap:14px">
+    <span class="conn down" id="conn">connecting…</span>
+    <a href="/">← Buyer Platform</a>
+  </div>
+</header>
+<main>
+  <div class="panel">
+    <h2>Live offer pool — every participant</h2>
+    <div class="sub">Every offer currently discoverable on the shared network, from every real tester — not just this demo's own two apps. Refreshed automatically.</div>
+    <div class="stat-row">
+      <div class="stat"><div class="num" id="statTotalOffers">—</div><div class="lbl">Total offers</div></div>
+      <div class="stat"><div class="num" id="statOwnOffers">—</div><div class="lbl">Ours</div></div>
+      <div class="stat"><div class="num" id="statOtherSellers">—</div><div class="lbl">Other sellers seen</div></div>
+    </div>
+    <div class="list" id="offersList"><div class="empty">Loading…</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Our trades — verified on the real external ledger</h2>
+    <div class="sub">
+      Queried live and signed (Ed25519) straight from
+      <code id="ledgerUrlLabel">the DEG Ledger</code> — a separate real service,
+      independent of this app's own local database. Each row below carries a
+      real <code>rowDigest</code> hash computed by the ledger itself: proof
+      this exact trade is genuinely recorded outside our two apps, not just
+      claimed to be.
+    </div>
+    <div class="hint">
+      Note: the ledger only ever returns records <em>our own platform</em>
+      is a party to — there's no query that returns every other
+      participant's private trades too. That's the ledger's real privacy
+      boundary working as intended (unlike <code>discover</code>'s public
+      catalog above, a settlement ledger is never meant to be browsable by
+      third parties in a real deployment).
+    </div>
+    <div id="ledgerErr"></div>
+    <div class="stat-row">
+      <div class="stat"><div class="num" id="statTotalTrades">—</div><div class="lbl">Ledger-verified trades</div></div>
+      <div class="stat"><div class="num" id="statAsOf">—</div><div class="lbl">As of</div></div>
+    </div>
+    <div class="list" id="ledgerList"><div class="empty">Loading…</div></div>
+  </div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const OWN_SELLER_ID = "sellerapp.example.com";
+const OWN_BUYER_ID = "buyerapp.example.com";
+
+let lastOffersJson = "";
+let lastLedgerJson = "";
+
+function renderOffers(list) {
+  $("#statTotalOffers").textContent = list.length;
+  const own = list.filter((o) => o.seller_id === OWN_SELLER_ID);
+  const otherSellers = new Set(list.filter((o) => o.seller_id !== OWN_SELLER_ID).map((o) => o.seller_id));
+  $("#statOwnOffers").textContent = own.length;
+  $("#statOtherSellers").textContent = otherSellers.size;
+
+  const el = $("#offersList");
+  if (!list.length) { el.innerHTML = '<div class="empty">No offers discovered yet — hit Refresh on the Buyer Platform dashboard.</div>'; return; }
+  el.innerHTML = list.map((o) => {
+    const isOwn = o.seller_id === OWN_SELLER_ID;
+    return `
+    <div class="row ${isOwn ? "mine" : ""}">
+      <div class="meta">
+        <div class="primary">${o.name || o.offer_id}</div>
+        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id}</div>
+      </div>
+      <span class="badge ${isOwn ? "mine" : "other"}">${isOwn ? "ours" : "external"}</span>
+    </div>`;
+  }).join("");
+}
+
+function renderLedger(payload) {
+  const list = payload.trades || [];
+  $("#ledgerUrlLabel").textContent = payload.ledgerUrl || "the DEG Ledger";
+  $("#statTotalTrades").textContent = list.length;
+  $("#statAsOf").textContent = payload.asOf ? new Date(payload.asOf).toLocaleTimeString() : "—";
+  $("#ledgerErr").innerHTML = payload.staleWarning
+    ? `<div class="err-banner">Live ledger query failed just now (${payload.staleWarning}) — showing the last successful result.</div>`
+    : "";
+
+  const el = $("#ledgerList");
+  if (!list.length) { el.innerHTML = '<div class="empty">No ledger-verified trades yet — settle a trade on the Seller Platform to see it appear here.</div>'; return; }
+  el.innerHTML = list.map((t) => {
+    const digestPreview = t.rowDigests[0] ? t.rowDigests[0].slice(0, 22) + "…" : "";
+    return `
+    <div class="row mine">
+      <div class="meta">
+        <div class="primary">${t.totalQty} kWh @ ~₹${t.avgPrice ?? "?"}/kWh — ${t.orderItemId || t.transactionId.slice(0, 8)}</div>
+        <div class="secondary">${t.platformIdBuyer} ← ${t.platformIdSeller} · discoms: ${t.discomIdBuyer}/${t.discomIdSeller} · ${new Date(t.tradeTime).toLocaleString()}</div>
+        <div class="secondary digest">🔒 verified: ${digestPreview} (${t.rowDigests.length} ledger row${t.rowDigests.length === 1 ? "" : "s"}, roles: ${t.roles.join(", ")})</div>
+      </div>
+      <span class="badge verified">ledger-verified</span>
+    </div>`;
+  }).join("");
+}
+
+async function refreshOffers() {
+  try {
+    const offers = await fetch("/api/offers").then((r) => r.json());
+    const json = JSON.stringify(offers);
+    if (json !== lastOffersJson) { lastOffersJson = json; renderOffers(offers); }
+  } catch (err) { console.error("offers refresh failed:", err); }
+}
+
+async function refreshLedger() {
+  try {
+    const payload = await fetch("/api/network/ledger-trades").then((r) => r.json());
+    if (payload.error) { $("#ledgerErr").innerHTML = `<div class="err-banner">${payload.error}</div>`; return; }
+    const json = JSON.stringify(payload);
+    if (json !== lastLedgerJson) { lastLedgerJson = json; renderLedger(payload); }
+  } catch (err) { console.error("ledger refresh failed:", err); }
+}
+
+function connectWs() {
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
+  ws.onopen = () => { $("#conn").textContent = "live"; $("#conn").className = "conn up"; };
+  ws.onclose = () => { $("#conn").textContent = "disconnected"; $("#conn").className = "conn down"; setTimeout(connectWs, 2000); };
+  ws.onmessage = () => { refreshOffers(); refreshLedger(); };
+}
+
+connectWs();
+refreshOffers();
+refreshLedger();
+setInterval(refreshOffers, 5000);
+setInterval(refreshLedger, 10000);
+</script>
+</body>
+</html>

@@ -237,8 +237,15 @@ wired up.
    `http://localhost:4002/api/offers` in a new browser tab — it shows the
    raw offer list including the `id` field, e.g. `offer-demo-a1b2c3d4`.
 3. **On the Buyer page:** paste that offer ID into the "Buy directly"
-   form, adjust quantity/price to match (or less), leave "Trade as" on
-   **Allowed discom**, click **Buy**. This sends a real, signed `init`.
+   form. It live-resolves the ID against the Seller Platform's own real
+   catalog — price fills in automatically and can't be edited (it's the
+   seller's own published figure, not yours to set), and the quantity
+   field is capped to what's actually available. Adjust quantity down if
+   you want (or leave it at the max), leave "Trade as" on **Allowed
+   discom**, click **Buy**. This sends a real, signed `init` — and the
+   same real check runs server-side too, so a made-up offer ID, a
+   too-large quantity, or a tampered price are all rejected before
+   anything is sent, not just blocked in the browser.
 4. **Back on the Seller page:** within a second or two, the request
    appears live under "Incoming requests." Click **Accept**.
 5. Watch both pages — with no further clicks, the trade flips to
@@ -303,6 +310,50 @@ underlying records (including ones no longer shown in an "active" list,
 like old settled or rejected trades), open `http://localhost:4002/api/trades`
 (seller) or `http://localhost:4001/api/trades` (buyer) in a browser tab —
 plain JSON, nothing to install.
+
+---
+
+## Optional: the Network Dashboard, and proving this is really a shared network
+
+Open **http://localhost:4001/network.html** (a link also sits in the
+Buyer Platform's header) for a live, auto-refreshing view of:
+
+- **Every offer discoverable on the shared network**, from every real
+  participant currently testing on it — not just this app's own two
+  sides — with your own highlighted.
+- **This app's own trades, independently verified on the real external
+  DEG ledger** (`ies-p2p-energy-ledger.beckn.io`) — queried live with a
+  real Ed25519-signed request, entirely separate from this app's own
+  local database. Each row carries a real `rowDigest` hash the ledger
+  itself computed, so you can prove a completed trade genuinely landed
+  somewhere outside these two apps, not just inside a local SQLite file.
+
+**Two things worth understanding about what you'll actually see there:**
+
+1. **`discover`'s real results only ever reach you if `onix-buyerapp` is
+   itself reachable from the public internet.** The shared discovery
+   service delivers its answer *asynchronously*, to whatever `bapUri`
+   your discover request carries — and by default that's
+   `buyerapp.example.com`, an address that only resolves inside your own
+   local Docker network. On a plain local run (just following Steps 3-6
+   above), clicking "Refresh offers" will send the request fine, but
+   nothing will come back. This isn't a bug to fix by retrying — it's
+   inherent to how a real async callback has to work. To actually receive
+   results, expose `onix-buyerapp` (port 8081) via a tunnel (e.g.
+   [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/),
+   free, no signup: `cloudflared tunnel --url http://localhost:8081`) and
+   set the resulting public URL, either as a `PUBLIC_BAP_URI` environment
+   variable or written to a `buyer-app/public-bap-uri.txt` file (one line,
+   the tunnel's base URL — this file is gitignored on purpose, since the
+   URL is different every time you start a new tunnel), before starting
+   the Buyer Platform. Buying and publishing both work over plain
+   `localhost` regardless — only the async discover results need this.
+2. **The ledger panel only ever shows trades *this platform* was a party
+   to** — not because it's blocked from seeing more, but because the real
+   ledger genuinely only records what you tell it (via each trade's own
+   `participants[].ledgerUri`, in `seller-app/beckn.js`'s
+   `pointSellerDiscomAtRealLedger`). It's a real, independent proof of
+   *your own* trades, not a browser for everyone else's.
 
 ---
 
