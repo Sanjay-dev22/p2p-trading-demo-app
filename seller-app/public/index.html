@@ -203,7 +203,13 @@ $("#resetBtn").addEventListener("click", async () => {
 });
 
 function connectWs() {
-  const ws = new WebSocket(`ws://${location.host}/ws`);
+  // Match the page's own protocol: a page loaded over https:// (e.g.
+  // through a tunnel) will never let an insecure ws:// connection open —
+  // the browser blocks it silently as mixed content. wss:// on https,
+  // ws:// on plain http; either way this always matches how the page
+  // itself was loaded.
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
   ws.onopen = () => { $("#conn").textContent = "live"; $("#conn").className = "conn up"; };
   ws.onclose = () => { $("#conn").textContent = "disconnected"; $("#conn").className = "conn down"; setTimeout(connectWs, 2000); };
   ws.onmessage = (ev) => {
