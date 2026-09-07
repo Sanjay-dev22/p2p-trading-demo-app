@@ -68,9 +68,6 @@ services:
     networks:
       - bap_side
     extra_hosts:
-      # Docker Desktop (Windows/Mac) already resolves this; plain Docker
-      # Engine on Linux needs this line to reach the host machine, where
-      # buyer-app / seller-app run as plain `npm start` processes, not containers.
       - "host.docker.internal:host-gateway"
 
   # sandbox-buyerapp (fidedocker/sandbox-2.0, fixture-replay stub) is
@@ -371,6 +368,17 @@ services:
     container_name: beckn-router
     ports:
       - "9000:9000"
+    environment:
+      # Caddy's own reverse_proxy step makes a second, separate outbound
+      # hop for every request (e.g. beckn-router -> onix-sellerapp:8082)
+      # — this container needs the exact same proxy-bypass the six
+      # onix-* services already have, for the exact same reason: if
+      # Docker Desktop auto-injects HTTP_PROXY/HTTPS_PROXY here too (it
+      # does, uniformly, to every container), Caddy's own upstream
+      # connection to another container's plain internal name would
+      # otherwise also get sent through it and fail the same way.
+      NO_PROXY: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
+      no_proxy: "sellerapp.example.com,buyerapp.example.com,seller-discom-ledger.example.com,buyer-discom-ledger.example.com,sellerdiscom.example.com,buyerdiscom.example.com,localhost,127.0.0.1,redis,beckn-router,onix-buyerapp,onix-sellerapp,onix-ledger-sellerdiscom,onix-ledger-buyerdiscom,onix-buyerdiscom,onix-sellerdiscom,vault,rabbitmq"
     networks:
       bap_side:
         aliases:
