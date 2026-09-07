@@ -71,6 +71,17 @@ async function postToOnix(pathSuffix, body) {
   return { status: res.status, ok: res.ok, json, text: rawText };
 }
 
+// The real, external discovery service needs a genuinely public address to
+// send its (async) results back to — our local-only bapUri (only meaningful
+// inside this Docker network) can never be reached by a real internet
+// service. If PUBLIC_BAP_URI is set (a tunnel exposing onix-buyerapp:8081,
+// e.g. via `cloudflared tunnel --url http://localhost:8081`), discover uses
+// that instead; every other message keeps using the local address, since
+// those only ever need to reach our own local peer, which resolves fine.
+const PUBLIC_BAP_URI = process.env.PUBLIC_BAP_URI
+  ? `${process.env.PUBLIC_BAP_URI.replace(/\/$/, "")}/bap/receiver`
+  : null;
+
 function buildDiscover() {
   const transactionId = uuid();
   const messageId = uuid();
@@ -79,7 +90,7 @@ function buildDiscover() {
     version: "2.0.0",
     action: "discover",
     bapId: SELF_ID,
-    bapUri: SELF_URI,
+    bapUri: PUBLIC_BAP_URI || SELF_URI,
     transactionId,
     messageId,
     timestamp: nowIso(),

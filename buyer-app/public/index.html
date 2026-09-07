@@ -44,6 +44,11 @@
   .conn { font-size: 11px; color: var(--muted); }
   .conn.up::before { content: "● "; color: var(--accent); }
   .conn.down::before { content: "● "; color: var(--red); }
+  .tag { font-size: 11px; color: var(--muted); font-style: italic; }
+  .field input[readonly] { opacity: 0.7; cursor: not-allowed; }
+  .resolve-status { font-size: 12px; min-height: 16px; width: 100%; }
+  .resolve-status.ok { color: var(--accent); }
+  .resolve-status.err { color: var(--red); }
 </style>
 </head>
 <body>
@@ -66,9 +71,9 @@
     <h2>Buy directly</h2>
     <div class="hint">If the offer you want isn't listed above yet, paste its real Offer ID here — copy it from the "My published offers" list on the <strong>Seller Platform</strong> page (it looks like <code>offer-demo-xxxxxxxx</code>, not a made-up value). Same real <code>init</code> call either way.</div>
     <form id="buyForm">
-      <div class="field"><label>Offer ID</label><input type="text" name="offerId" placeholder="offer-demo-xxxxxxxx" required></div>
-      <div class="field"><label>Quantity (kWh)</label><input type="number" step="0.1" name="quantityKwh" value="15" required></div>
-      <div class="field"><label>Price (₹/kWh)</label><input type="number" step="0.1" name="pricePerKwh" value="12.5" required></div>
+      <div class="field"><label>Offer ID</label><input type="text" name="offerId" id="offerIdInput" placeholder="offer-demo-xxxxxxxx" required autocomplete="off"></div>
+      <div class="field"><label>Quantity (kWh)</label><input type="number" step="0.1" name="quantityKwh" id="qtyInput" value="" placeholder="—" required disabled></div>
+      <div class="field"><label>Price (₹/kWh)</label><input type="number" step="0.1" name="pricePerKwh" id="priceInput" value="" placeholder="—" readonly disabled></div>
       <div class="field">
         <label>Trade as</label>
         <select name="buyerDiscomId">
@@ -76,7 +81,8 @@
           <option value="blocked">Blocked discom (watch it get rejected)</option>
         </select>
       </div>
-      <button type="submit">Buy</button>
+      <button type="submit" id="buyDirectlyBtn" disabled>Buy</button>
+      <div class="resolve-status" id="resolveStatus"></div>
     </form>
   </div>
 
@@ -104,26 +110,47 @@ function badge(status) {
   return `<span class="badge ${cls}">${label}</span>`;
 }
 
+// Real seller this demo instance can actually transact with — kept in
+// sync with beckn.js's SELLER_ID server-side; used only to label foreign
+// cards here, the server enforces the real check independently in
+// resolveOffer() (never trust this client-side copy for anything else).
+const OWN_SELLER_ID = "sellerapp.example.com";
+
+// Avoid a full DOM replace on every 5s poll when nothing actually
+// changed — the old code re-rendered the entire list every tick
+// regardless, which flickers and (worse) can invalidate a button right
+// under the pointer mid-click. Skipping the no-op re-render fixes both.
+let lastOffersJson = "";
+let lastTradesJson = "";
+
 async function refreshAll() {
   const [offers, trades] = await Promise.all([
     fetch("/api/offers").then((r) => r.json()),
     fetch("/api/trades").then((r) => r.json()),
   ]);
-  renderOffers(offers);
-  renderTrades(trades);
+  const offersJson = JSON.stringify(offers);
+  if (offersJson !== lastOffersJson) { lastOffersJson = offersJson; renderOffers(offers); }
+  const tradesJson = JSON.stringify(trades);
+  if (tradesJson !== lastTradesJson) { lastTradesJson = tradesJson; renderTrades(trades); }
 }
 
 function renderOffers(list) {
   const el = $("#offers");
   if (!list.length) { el.innerHTML = '<div class="empty">No offers discovered yet.</div>'; return; }
-  el.innerHTML = list.map((o) => `
+  el.innerHTML = list.map((o) => {
+    const isOwn = o.seller_id === OWN_SELLER_ID;
+    const action = isOwn
+      ? `<button onclick="buyFromCard('${o.offer_id}', ${o.available_qty}, ${o.price_per_kwh})">Buy</button>`
+      : `<span class="tag" title="A real different network participant's offer — this demo instance has no live routing endpoint for their platform, so it can be viewed but not bought here">view only</span>`;
+    return `
     <div class="row">
       <div class="meta">
         <div class="primary">${o.name || o.offer_id}</div>
         <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id}</div>
       </div>
-      <button onclick="buyFromCard('${o.offer_id}', ${o.available_qty}, ${o.price_per_kwh})">Buy</button>
-    </div>`).join("");
+      ${action}
+    </div>`;
+  }).join("");
 }
 
 function renderTrades(list) {
@@ -143,7 +170,7 @@ async function buy(offerId, quantityKwh, pricePerKwh, buyerDiscomId) {
   const res = await fetch("/api/buy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId, quantityKwh, pricePerKwh, buyerDiscomId }) });
   const body = await res.json();
   if (body.rejected) { toast("Rejected: " + (body.trade.errorMessage || "policy violation"), true); refreshAll(); return; }
-  if (!res.ok) { toast("Buy failed: " + (body.error || res.status), true); return; }
+  if (!res.ok) { toast((body.error || "Buy failed: " + res.status), true); return; }
   toast("init sent — waiting for seller");
   refreshAll();
 }
@@ -152,10 +179,66 @@ function buyFromCard(offerId, quantityKwh, pricePerKwh) {
   buy(offerId, quantityKwh, pricePerKwh, "allowed");
 }
 
+// ---------- "Buy directly" (paste an Offer ID): live-resolve it against
+// the real Seller Platform before letting Buy be pressed at all. Price is
+// always the seller's real published figure — never a free-typed field,
+// since the seller alone sets it, not the buyer. Quantity is capped to
+// what's actually available. ----------
+const offerIdInput = $("#offerIdInput");
+const qtyInput = $("#qtyInput");
+const priceInput = $("#priceInput");
+const buyDirectlyBtn = $("#buyDirectlyBtn");
+const resolveStatusEl = $("#resolveStatus");
+let currentResolution = null;
+let resolveDebounce;
+
+function setResolveStatus(msg, isErr) {
+  resolveStatusEl.textContent = msg;
+  resolveStatusEl.className = "resolve-status" + (isErr ? " err" : msg ? " ok" : "");
+}
+
+async function resolveOfferId() {
+  const offerId = offerIdInput.value.trim();
+  currentResolution = null;
+  buyDirectlyBtn.disabled = true;
+  qtyInput.disabled = true;
+  priceInput.value = "";
+  qtyInput.value = "";
+  if (!offerId) { setResolveStatus(""); return; }
+  setResolveStatus("checking…");
+  const res = await fetch(`/api/resolve-offer/${encodeURIComponent(offerId)}`);
+  const r = await res.json();
+  // The field may have changed while this request was in flight — ignore
+  // a stale response rather than overwrite what the user is now typing.
+  if (offerIdInput.value.trim() !== offerId) return;
+  currentResolution = r;
+  if (!r.found) { setResolveStatus("✗ " + r.reason, true); return; }
+  if (!r.buyable) { setResolveStatus("✗ " + r.reason, true); return; }
+  priceInput.value = r.pricePerKwh;
+  qtyInput.value = r.availableQty;
+  qtyInput.max = r.availableQty;
+  qtyInput.disabled = false;
+  buyDirectlyBtn.disabled = false;
+  setResolveStatus(`✓ Real offer from ${r.sellerId} — ${r.availableQty} kWh @ ₹${r.pricePerKwh}/kWh available`);
+}
+
+offerIdInput.addEventListener("input", () => { clearTimeout(resolveDebounce); resolveDebounce = setTimeout(resolveOfferId, 350); });
+
 $("#buyForm").addEventListener("submit", (e) => {
   e.preventDefault();
+  if (!currentResolution || !currentResolution.buyable) { setResolveStatus("Resolve a real, buyable offer ID first.", true); return; }
   const fd = new FormData(e.target);
-  buy(fd.get("offerId"), Number(fd.get("quantityKwh")), Number(fd.get("pricePerKwh")), fd.get("buyerDiscomId"));
+  const quantityKwh = Number(fd.get("quantityKwh"));
+  if (!quantityKwh || quantityKwh <= 0) { setResolveStatus("Enter a positive quantity.", true); return; }
+  if (quantityKwh > currentResolution.availableQty) {
+    setResolveStatus(`Only ${currentResolution.availableQty} kWh is available — lower the quantity.`, true);
+    return;
+  }
+  // Price always comes from the resolved offer, never the (read-only,
+  // but belt-and-suspenders) form field — the server re-checks this
+  // exact thing independently regardless, so this can't be bypassed by
+  // re-enabling the field via devtools.
+  buy(currentResolution.offerId, quantityKwh, currentResolution.pricePerKwh, fd.get("buyerDiscomId"));
 });
 
 $("#discoverBtn").addEventListener("click", async () => {

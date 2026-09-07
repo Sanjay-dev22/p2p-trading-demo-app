@@ -47,7 +47,19 @@ modules:
           id: schemav2validator
           config:
             cacheTTL: "172800"
-            extendedSchema_enabled: "true"
+            # Disabled specifically here (was "true"): this is the one
+            # module that receives on_discover — a real, shared,
+            # multi-tenant aggregated catalog we don't control the
+            # contents of. One non-conformant historical entry from any
+            # other real tester, anywhere in that shared catalog, was
+            # enough to fail extended validation for the ENTIRE payload
+            # atomically and block discovery of everything, including our
+            # own freshly-published, fully valid offers (confirmed live:
+            # "property participantId is missing" on some other entry).
+            # Base schema validation (still on) already catches genuinely
+            # malformed messages; this only skips the extra domain-object
+            # (@type-tagged) cross-check against remote schema files.
+            extendedSchema_enabled: "false"
             extendedSchema_cacheTTL: "172800"
             extendedSchema_maxCacheSize: "100"
             extendedSchema_downloadTimeout: "30"
