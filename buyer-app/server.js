@@ -54,6 +54,22 @@ app.get("/api/personas", (req, res) => {
   res.json({ allowed: beckn.DISCOM_ALLOWED, blocked: beckn.DISCOM_BLOCKED });
 });
 
+// ---------- Reset: wipe this platform's own data for a fresh demo run ----------
+// Only ever touches this app's own database file — the seller platform
+// has to be reset separately from its own dashboard, on purpose (see
+// ARCHITECTURE.md §2: no shared state between the two platforms, ever).
+app.post("/api/reset", (req, res) => {
+  try {
+    db.exec("DELETE FROM trades");
+    db.exec("DELETE FROM discovered_offers");
+    broadcast("reset", {});
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("reset failed:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ---------- fire a real discover ----------
 app.post("/api/discover", async (req, res) => {
   try {

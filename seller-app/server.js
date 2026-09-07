@@ -59,6 +59,22 @@ app.get("/api/earnings", (req, res) => {
   res.json({ total: row.total });
 });
 
+// ---------- Reset: wipe this platform's own data for a fresh demo run ----------
+// Only ever touches this app's own database file — the buyer platform
+// has to be reset separately from its own dashboard, on purpose (see
+// ARCHITECTURE.md §2: no shared state between the two platforms, ever).
+app.post("/api/reset", (req, res) => {
+  try {
+    db.exec("DELETE FROM trades");
+    db.exec("DELETE FROM offers");
+    broadcast("reset", {});
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("reset failed:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // ---------- publish a new offer (real catalog/publish) ----------
 app.post("/api/publish", async (req, res) => {
   try {

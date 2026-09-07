@@ -49,7 +49,10 @@
 <body>
 <header>
   <h1>🔌 <span class="role">Buyer Platform</span> — buyerapp.example.com</h1>
-  <span class="conn down" id="conn">connecting…</span>
+  <div style="display:flex;align-items:center;gap:12px">
+    <span class="conn down" id="conn">connecting…</span>
+    <button class="secondary" id="resetBtn" title="Wipe this platform's own offers and trades">Reset demo</button>
+  </div>
 </header>
 <main>
   <div class="panel">
@@ -167,6 +170,15 @@ $("#discoverBtn").addEventListener("click", async () => {
   toast("discover sent — results (if any) will appear shortly");
 });
 
+$("#resetBtn").addEventListener("click", async () => {
+  if (!confirm("Wipe every discovered offer and trade on this Buyer Platform? This can't be undone. (The Seller Platform's own data is separate — reset it there too if you want a fully clean pair.)")) return;
+  const res = await fetch("/api/reset", { method: "POST" });
+  const body = await res.json();
+  if (!res.ok) { toast("Reset failed: " + (body.error || res.status), true); return; }
+  toast("Buyer Platform reset — starting fresh");
+  refreshAll();
+});
+
 function connectWs() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => { $("#conn").textContent = "live"; $("#conn").className = "conn up"; };
@@ -179,6 +191,7 @@ function connectWs() {
     if (type === "confirming") toast("Seller replied — confirm sent");
     if (type === "active") toast("Trade confirmed — now ACTIVE");
     if (type === "settled") toast(`Settled — paid ₹${data.settlementAmount.toFixed(2)}`);
+    if (type === "reset") toast("Reset from elsewhere — refreshing");
     refreshAll();
   };
 }

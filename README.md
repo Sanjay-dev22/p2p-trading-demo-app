@@ -272,14 +272,37 @@ To run again later, repeat from Step 3 onward (Docker images are already
 downloaded, so it'll be fast this time; `npm install` doesn't need to be
 re-run unless you deleted the `node_modules` folders).
 
-To reset the apps to an empty state (clear all offers/trades) without
-uninstalling anything:
+## Resetting to a fresh, empty state
+
+**Restarting the apps (`npm start` again) does not clear anything** —
+each platform's offers/trades live in a real database file
+(`seller-app/seller-app.db`, `buyer-app/buyer-app.db`), which restarting
+the process, or clearing your terminal, has zero effect on. That file is
+the entire point of using a real database instead of an in-memory array:
+it survives a restart the same way a real system's data would.
+
+**The easy way**: each dashboard has its own **Reset demo** button (top
+right) — click it, confirm, and that platform's offers and trades are
+wiped instantly, live, with no need to touch a terminal at all. The two
+platforms are reset independently (by design — see
+`p2p-trading-app/ARCHITECTURE.md` §2, no shared state between them ever)
+— click it on both if you want a fully clean pair.
+
+**The manual way** (equivalent, useful if the apps aren't running):
 ```bash
 cd ~/Desktop/p2p-trading-demo
 rm -f seller-app/seller-app.db* buyer-app/buyer-app.db*
 ```
 Do this while both `npm start` processes are stopped, then start them
 again.
+
+**To review history before deciding to clear it**: both dashboards
+already show their own live, running list of every offer/trade — that's
+the same data the Reset button would wipe. For a closer look at the raw
+underlying records (including ones no longer shown in an "active" list,
+like old settled or rejected trades), open `http://localhost:4002/api/trades`
+(seller) or `http://localhost:4001/api/trades` (buyer) in a browser tab —
+plain JSON, nothing to install.
 
 ---
 
