@@ -1,12 +1,18 @@
-// Real, file-based storage (SQLite via better-sqlite3) — no external DB
-// server to run. Deliberately the "lightweight demo" choice explained in
-// p2p-trading-app/DEMO-APP-PLAN.md §3: real inserts/queries, survives a
-// page refresh mid-demo, zero infra beyond this one file.
+// Real, file-based storage — Node's own built-in node:sqlite, not the
+// better-sqlite3 npm package: that one is a native addon, and its install
+// step needs github.com (prebuilt binary) or nodejs.org (headers to
+// compile from source) — both routinely blocked on corporate networks
+// that only allow package traffic through an internal registry mirror
+// (confirmed the hard way: real ENOTFOUND errors on both hosts). Node's
+// own node:sqlite needs neither — it ships inside Node itself, so
+// `npm install` here never leaves the configured npm registry at all.
+// Still marked experimental by Node itself as of this Node version; the
+// API used below (prepare/run/get/all) is stable across recent versions.
 const path = require("path");
-const Database = require("better-sqlite3");
+const { DatabaseSync } = require("node:sqlite");
 
-const db = new Database(path.join(__dirname, "seller-app.db"));
-db.pragma("journal_mode = WAL");
+const db = new DatabaseSync(path.join(__dirname, "seller-app.db"));
+db.exec("PRAGMA journal_mode = WAL");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS offers (

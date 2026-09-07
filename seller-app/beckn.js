@@ -78,11 +78,16 @@ function buildPublishCatalog({ offerId, quantityKwh, pricePerKwh }) {
     timestamp: nowIso(),
     schemaContext: SCHEMA_CONTEXT,
   };
+  // One id, computed once — a real bug caught by live schema validation:
+  // two separate Date.now() calls can straddle a millisecond boundary and
+  // produce two different ids, and publishDirectives[0].catalogId must
+  // match a real catalogs[].id or the whole publish gets NACKed.
+  const catalogId = `catalog-p2p-energy-${Date.now()}`;
   const message = {
-    publishDirectives: [{ catalogId: `catalog-p2p-energy-${Date.now()}`, catalogType: "REGULAR", updateMode: "MERGE", visibleTo: [NETWORK_ID] }],
+    publishDirectives: [{ catalogId, catalogType: "REGULAR", updateMode: "MERGE", visibleTo: [NETWORK_ID] }],
     catalogs: [
       {
-        id: `catalog-p2p-energy-${Date.now()}`,
+        id: catalogId,
         descriptor: { name: "P2P Solar Energy (demo)", shortDesc: `Rooftop solar offer — ${quantityKwh} kWh @ ₹${pricePerKwh}/kWh` },
         bppId: SELF_ID,
         bppUri: "http://sellerapp.example.com/bpp/receiver",

@@ -65,9 +65,10 @@ Check:
 node --version
 npm --version
 ```
-You need Node **v18 or newer** (v20 or v22 are fine too). If the number
-before the first dot is 16 or lower, uninstall and reinstall the LTS
-version from the link above.
+You need Node **v22.5 or newer** (this app uses Node's own built-in
+SQLite support, added in that version — v24, the current LTS, is fine
+too). If the number before the first dot is 20 or lower, uninstall and
+reinstall the LTS version from the link above.
 
 ### 1c. Docker Desktop
 
@@ -162,7 +163,7 @@ cd ~/Desktop/p2p-trading-demo/seller-app
 npm install
 ```
 This downloads the small number of libraries the app needs — takes under
-a minute. You'll see a line like `added 105 packages` when it's done.
+a minute. You'll see a line like `added 69 packages` when it's done.
 
 Now start it:
 ```bash
@@ -170,11 +171,17 @@ npm start
 ```
 You should see:
 ```
+(node:12345) ExperimentalWarning: SQLite is an experimental feature and might change at any time
 Seller Platform listening on http://localhost:4002
   → talking to onix-sellerapp at http://localhost:8082
   → webhook target for onix: http://host.docker.internal:4002/api/webhook
 ```
-**This command does not finish or return you to the prompt — that's
+**The `ExperimentalWarning` line is expected and harmless** — it's
+Node's own built-in database feature (`node:sqlite`) announcing itself,
+deliberately used here instead of a third-party database package so
+`npm install` never needs anything beyond your configured npm registry
+(see "On a corporate laptop" below for why that matters). **This command
+does not finish or return you to the prompt — that's
 correct.** It means the server is running and waiting. **Leave this
 terminal window open** for the rest of the demo. Do not close it, and do
 not press Ctrl+C in it (that would stop the server).
@@ -319,6 +326,18 @@ a bug message. If it mentions a policy violation, that's the intended
 "rejected trade" behavior from Step 7 §7 firing on the wrong persona; if
 it's something else, check both terminal windows from Steps 4-5 for a
 red error line and see what it says.
+
+**On a corporate/managed laptop, `npm install` fails with something
+mentioning `ENOTFOUND github.com` or `ENOTFOUND nodejs.org`**
+This app is deliberately built to avoid needing this — if you see it,
+you're most likely running an older copy of this repo (or a fork with
+extra dependencies). This exact version only ever needs packages from
+your organization's configured npm registry (check yours with
+`npm config get registry`) — it doesn't reach out to GitHub or nodejs.org
+at all. If you still hit this, confirm you're on the latest version of
+this repo (`git pull`), and check that `package.json` in both `seller-app`
+and `buyer-app` does **not** list `better-sqlite3` as a dependency — if it
+does, you have a stale copy.
 
 **Nothing above matches what you're seeing**
 Copy the exact text from your terminal (both the command you ran and

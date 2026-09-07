@@ -1,13 +1,15 @@
-// Real, file-based storage (SQLite via better-sqlite3) — see
-// seller-app/db.js for the same rationale. A separate file, a separate
-// database: the buyer platform is architecturally independent of the
-// seller platform (p2p-trading-app/ARCHITECTURE.md §2) — the only thing
-// connecting them is real Beckn messages through the router.
+// Real, file-based storage — Node's own built-in node:sqlite, not the
+// better-sqlite3 npm package. See seller-app/db.js for why: that package
+// is a native addon whose install step needs github.com or nodejs.org,
+// both routinely blocked on corporate networks. A separate database file
+// from the seller's: the buyer platform is architecturally independent
+// (p2p-trading-app/ARCHITECTURE.md §2) — the only thing connecting them
+// is real Beckn messages through the router.
 const path = require("path");
-const Database = require("better-sqlite3");
+const { DatabaseSync } = require("node:sqlite");
 
-const db = new Database(path.join(__dirname, "buyer-app.db"));
-db.pragma("journal_mode = WAL");
+const db = new DatabaseSync(path.join(__dirname, "buyer-app.db"));
+db.exec("PRAGMA journal_mode = WAL");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS discovered_offers (
