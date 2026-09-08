@@ -111,11 +111,14 @@ function badge(status) {
   return `<span class="badge ${cls}">${label}</span>`;
 }
 
-// Real seller this demo instance can actually transact with — kept in
-// sync with beckn.js's SELLER_ID server-side; used only to label foreign
-// cards here, the server enforces the real check independently in
-// resolveOffer() (never trust this client-side copy for anything else).
-const OWN_SELLER_ID = "sellerapp.example.com";
+// Whether a discovered offer is genuinely ours can NOT be determined by
+// comparing seller_id to "sellerapp.example.com" — that's the devkit's
+// own generic example participant ID from its tutorial fixtures, and
+// plenty of real, different testers on the shared network never bothered
+// to rename it either. The only reliable test is live membership in our
+// own Seller Platform's real catalog right now — myOfferIds below,
+// refreshed alongside everything else.
+let myOfferIds = new Set();
 
 // Avoid a full DOM replace on every 5s poll when nothing actually
 // changed — the old code re-rendered the entire list every tick
@@ -124,12 +127,27 @@ const OWN_SELLER_ID = "sellerapp.example.com";
 let lastOffersJson = "";
 let lastTradesJson = "";
 
+function timeAgo(iso) {
+  if (!iso) return "unknown time";
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.round(ms / 1000);
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return new Date(iso).toLocaleString();
+}
+
 async function refreshAll() {
-  const [offers, trades] = await Promise.all([
+  const [offers, trades, myOffers] = await Promise.all([
     fetch("/api/offers").then((r) => r.json()),
     fetch("/api/trades").then((r) => r.json()),
+    fetch("/api/my-offers").then((r) => r.json()).catch(() => ({ offerIds: [] })),
   ]);
-  const offersJson = JSON.stringify(offers);
+  myOfferIds = new Set(myOffers.offerIds || []);
+  const offersJson = JSON.stringify(offers) + JSON.stringify([...myOfferIds]);
   if (offersJson !== lastOffersJson) { lastOffersJson = offersJson; renderOffers(offers); }
   const tradesJson = JSON.stringify(trades);
   if (tradesJson !== lastTradesJson) { lastTradesJson = tradesJson; renderTrades(trades); }
@@ -139,15 +157,15 @@ function renderOffers(list) {
   const el = $("#offers");
   if (!list.length) { el.innerHTML = '<div class="empty">No offers discovered yet.</div>'; return; }
   el.innerHTML = list.map((o) => {
-    const isOwn = o.seller_id === OWN_SELLER_ID;
+    const isOwn = myOfferIds.has(o.offer_id);
     const action = isOwn
       ? `<button onclick="buyFromCard('${o.offer_id}', ${o.available_qty}, ${o.price_per_kwh})">Buy</button>`
-      : `<span class="tag" title="A real different network participant's offer — this demo instance has no live routing endpoint for their platform, so it can be viewed but not bought here">view only</span>`;
+      : `<span class="tag" title="Not currently live on our own Seller Platform's real catalog — either a different real network participant's offer (this demo has no live routing endpoint for their platform), or one of our own past offers that's no longer live">view only</span>`;
     return `
     <div class="row">
       <div class="meta">
-        <div class="primary">${o.name || o.offer_id}</div>
-        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id}</div>
+        <div class="primary">${o.name || o.offer_id}${isOwn ? ' <span class="tag" style="color:var(--accent)">ours, live now</span>' : ""}</div>
+        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · discovered ${timeAgo(o.discovered_at)}</div>
       </div>
       ${action}
     </div>`;

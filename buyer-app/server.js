@@ -66,12 +66,16 @@ app.get("/api/personas", (req, res) => {
 //   1. buyable — it's on our own real trading partner's live catalog right
 //      now (checked directly against the Seller Platform's own REST API,
 //      not our own copy of a past discover response).
-//   2. found but not buyable — either a genuinely different real network
-//      participant's offer (seen via a real discover; this demo has no
-//      live routing endpoint for their platform, since resolving a real
-//      bppUri for a foreign participant needs a DeDi registry lookup this
-//      app doesn't do), or one of our own seller's offers that used to be
-//      live but no longer is (reset/removed since it was discovered).
+//   2. found but not buyable — some other reason it can't be bought here.
+//      Important nuance, found the hard way: `sellerapp.example.com` is the
+//      *devkit's own generic example participant ID* from its tutorial
+//      fixtures, not a unique identity — plenty of real, different testers
+//      on the shared network never bothered to rename it, so a
+//      discovered_offers row's seller_id being "sellerapp.example.com"
+//      does NOT reliably mean it was ever actually us. We genuinely cannot
+//      tell "was ours, now stale" apart from "always was someone else's,
+//      same generic ID" from seller_id alone — so the message below never
+//      claims either with false certainty.
 //   3. not found at all — never seen anywhere.
 async function resolveOffer(offerId) {
   try {
@@ -86,7 +90,6 @@ async function resolveOffer(offerId) {
 
   const discovered = db.prepare("SELECT * FROM discovered_offers WHERE offer_id=?").get(offerId);
   if (discovered) {
-    const isOwn = discovered.seller_id === beckn.SELLER_ID;
     return {
       found: true,
       buyable: false,
@@ -94,9 +97,7 @@ async function resolveOffer(offerId) {
       offerId,
       pricePerKwh: discovered.price_per_kwh,
       availableQty: discovered.available_qty,
-      reason: isOwn
-        ? "This offer was published by our own Seller Platform but isn't live there any more (reset or removed since it was discovered) — publish it again to buy it."
-        : `This offer belongs to ${discovered.seller_id}, a different real network participant discovered on the shared network. This demo instance has no live routing endpoint for their platform, so it can be viewed but not bought here.`,
+      reason: `Not currently live on ${discovered.seller_id === beckn.SELLER_ID ? "the matching" : discovered.seller_id + "'s"} real catalog right now — either it's your own past publish that's no longer live (republish it to buy it), or a different real network participant's offer this demo instance has no live routing endpoint for.`,
     };
   }
 
@@ -105,6 +106,22 @@ async function resolveOffer(offerId) {
 
 app.get("/api/resolve-offer/:offerId", async (req, res) => {
   res.json(await resolveOffer(req.params.offerId));
+});
+
+// ---------- Which discovered offers are genuinely ours, right now ----------
+// The only reliable test: is this offer_id actually sitting in the Seller
+// Platform's own live catalog at this exact moment? Comparing seller_id
+// strings doesn't work (see resolveOffer's comment above) — this proxies
+// the real check server-side so the browser never needs cross-origin
+// access to the Seller Platform (which may be on an entirely different
+// tunnel domain during the real demo).
+app.get("/api/my-offers", async (req, res) => {
+  try {
+    const sellerOffers = await fetch(`${SELLER_APP_URL}/api/offers`).then((r) => (r.ok ? r.json() : []));
+    res.json({ ok: true, offerIds: sellerOffers.map((o) => o.id) });
+  } catch (err) {
+    res.json({ ok: false, offerIds: [], error: String(err.message || err) });
+  }
 });
 
 // ---------- Network Dashboard: real, ledger-verified trades ----------

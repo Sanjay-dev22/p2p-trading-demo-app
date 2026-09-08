@@ -93,30 +93,47 @@
 
 <script>
 const $ = (s) => document.querySelector(s);
-const OWN_SELLER_ID = "sellerapp.example.com";
-const OWN_BUYER_ID = "buyerapp.example.com";
 
+// Whether an offer is genuinely ours can't be determined from seller_id —
+// "sellerapp.example.com" is the devkit's own generic example participant
+// ID, and plenty of real, different testers on the shared network never
+// bothered to rename it. The only reliable test is live membership in our
+// own Seller Platform's real catalog right now.
+let myOfferIds = new Set();
 let lastOffersJson = "";
 let lastLedgerJson = "";
 
+function timeAgo(iso) {
+  if (!iso) return "unknown time";
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.round(ms / 1000);
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return new Date(iso).toLocaleString();
+}
+
 function renderOffers(list) {
   $("#statTotalOffers").textContent = list.length;
-  const own = list.filter((o) => o.seller_id === OWN_SELLER_ID);
-  const otherSellers = new Set(list.filter((o) => o.seller_id !== OWN_SELLER_ID).map((o) => o.seller_id));
+  const own = list.filter((o) => myOfferIds.has(o.offer_id));
+  const otherSellers = new Set(list.filter((o) => !myOfferIds.has(o.offer_id)).map((o) => o.seller_id));
   $("#statOwnOffers").textContent = own.length;
   $("#statOtherSellers").textContent = otherSellers.size;
 
   const el = $("#offersList");
   if (!list.length) { el.innerHTML = '<div class="empty">No offers discovered yet — hit Refresh on the Buyer Platform dashboard.</div>'; return; }
   el.innerHTML = list.map((o) => {
-    const isOwn = o.seller_id === OWN_SELLER_ID;
+    const isOwn = myOfferIds.has(o.offer_id);
     return `
     <div class="row ${isOwn ? "mine" : ""}">
       <div class="meta">
         <div class="primary">${o.name || o.offer_id}</div>
-        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id}</div>
+        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · discovered ${timeAgo(o.discovered_at)}</div>
       </div>
-      <span class="badge ${isOwn ? "mine" : "other"}">${isOwn ? "ours" : "external"}</span>
+      <span class="badge ${isOwn ? "mine" : "other"}">${isOwn ? "ours, live now" : "external"}</span>
     </div>`;
   }).join("");
 }
@@ -148,8 +165,12 @@ function renderLedger(payload) {
 
 async function refreshOffers() {
   try {
-    const offers = await fetch("/api/offers").then((r) => r.json());
-    const json = JSON.stringify(offers);
+    const [offers, myOffers] = await Promise.all([
+      fetch("/api/offers").then((r) => r.json()),
+      fetch("/api/my-offers").then((r) => r.json()).catch(() => ({ offerIds: [] })),
+    ]);
+    myOfferIds = new Set(myOffers.offerIds || []);
+    const json = JSON.stringify(offers) + JSON.stringify([...myOfferIds]);
     if (json !== lastOffersJson) { lastOffersJson = json; renderOffers(offers); }
   } catch (err) { console.error("offers refresh failed:", err); }
 }
