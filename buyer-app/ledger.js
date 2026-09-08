@@ -36,32 +36,49 @@ function signPayload(bodyBuf) {
   return `Signature keyId="${SUBSCRIBER_ID}|${RECORD_ID}|ed25519",algorithm="ed25519",created="${created}",expires="${expires}",headers="(created) (expires) digest",signature="${signature}"`;
 }
 
-// Fetch every real ledger record buyerapp.example.com is a party to (as
-// buyer or seller) since fromDate, paginating through all pages.
+// Fetch real ledger records since fromDate, paginating through all pages.
 //
-// Note on scope: the ledger only ever returns records the *signing
-// identity* is a party to — there is no query that returns every other
-// participant's trades too. That's not a gap in this integration; it's
-// the real privacy boundary a production ledger is supposed to enforce
-// (unlike `discover`, which is deliberately public — a catalog is meant
-// to be advertised). So this proves "our trade really landed on the
-// external ledger, verifiably" — not "here's everyone else's private
-// trade data," which no real deployment would ever expose either.
+// Note on scope (corrected — an earlier version of this comment claimed
+// the opposite): the query is genuinely global across all platforms in
+// the date range, gated only by needing any one valid registered
+// participant's signing credentials — not scoped to the signing
+// identity's own party. In practice this demo mostly only ever sees its
+// own two platforms' trades simply because that's what's actually in the
+// ledger for the date ranges queried, not because of an access
+// restriction.
+//
+// Real intermittent failure mode seen in practice: the sandbox signing
+// key sometimes gets a 401 `{"code":"SEC_KEY_EXPIRED_OR_REVOKED",
+// "message":"Signature expired"}` even though the request's own signature
+// window is freshly computed and correct — most likely transient
+// key-validity-cache inconsistency on the ledger service's side (some
+// backend replica hasn't caught up), not a bug here or a real, permanent
+// revocation (later calls with the identical signing scheme succeed
+// again). One immediate retry with a freshly re-signed request usually
+// clears it; if not, the caller (server.js) falls back to the last good
+// cached result rather than showing nothing.
 async function fetchLedgerTrades({ fromDate, toDate, limit = 500 } = {}) {
   const from = fromDate || new Date(Date.now() - 10 * 24 * 3600 * 1000).toISOString();
   const to = toDate || new Date().toISOString();
+
+  async function fetchPage(offset) {
+    const payload = { tradeTimeFrom: from, tradeTimeTo: to, sort: "tradeTime", sortOrder: "desc", limit, offset };
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const body = Buffer.from(JSON.stringify(payload));
+      const auth = signPayload(body); // freshly signed every attempt — never reuse a signature
+      const res = await fetch(`${LEDGER_URL}/ledger/get`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: auth }, body });
+      if (res.ok) return res.json();
+      const text = await res.text().catch(() => "");
+      if (attempt === 2) throw new Error(`ledger returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+      // First failure: brief pause, then one retry with a brand-new signature.
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+
   let offset = 0;
   const all = [];
   while (true) {
-    const payload = { tradeTimeFrom: from, tradeTimeTo: to, sort: "tradeTime", sortOrder: "desc", limit, offset };
-    const body = Buffer.from(JSON.stringify(payload));
-    const auth = signPayload(body);
-    const res = await fetch(`${LEDGER_URL}/ledger/get`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: auth }, body });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`ledger returned HTTP ${res.status}: ${text.slice(0, 300)}`);
-    }
-    const json = await res.json();
+    const json = await fetchPage(offset);
     const records = json.records || [];
     all.push(...records);
     if (records.length < limit) break;
