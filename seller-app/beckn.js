@@ -190,10 +190,25 @@ function buildPublishCatalog({ offerId, quantityKwh, pricePerKwh }) {
 // on_init: reply to an incoming init, reusing the buyer's own contract
 // object verbatim (it already passed real schema validation to reach us)
 // and adding the seller's proposed settlement terms, exactly mirroring
-// on-init-response.json.
-function buildOnInit(originalCtx, originalContract) {
+// on-init-response.json. When `counter` is given ({ pricePerKwh, quantityKwh }),
+// this is a real counter-offer, not a plain accept: the same proven message
+// shape is reused, only the PRICE_PER_KWH/AVAILABLE_QTY payload *values*
+// inside interval 0 are overwritten to the seller's counter-terms before
+// being sent back — no new schema, no new Beckn action, so real validation
+// on onix-sellerapp passes exactly as it does for a plain accept. The buyer
+// side is responsible for noticing the returned terms differ from what it
+// asked for and surfacing that as a decision rather than auto-confirming.
+function buildOnInit(originalCtx, originalContract, counter) {
   const contract = JSON.parse(JSON.stringify(originalContract));
   pointSellerDiscomAtRealLedger(contract);
+  if (counter) {
+    const interval0 = contract.commitments[0].commitmentAttributes.intervals[0];
+    for (const p of interval0.payloads) {
+      if (p.type === "PRICE_PER_KWH" && counter.pricePerKwh != null) p.values = [counter.pricePerKwh];
+      if (p.type === "AVAILABLE_QTY" && counter.quantityKwh != null) p.values = [counter.quantityKwh];
+    }
+    contract.commitments[0].resources[0].quantity.unitQuantity = counter.quantityKwh ?? contract.commitments[0].resources[0].quantity.unitQuantity;
+  }
   contract.status = { code: "DRAFT" };
   contract.commitments[0].status = { descriptor: { code: "DRAFT" } };
   contract.settlements = [

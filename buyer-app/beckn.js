@@ -198,6 +198,16 @@ function extractRevenueFlow(contract, role) {
   return flows.find((f) => f.role === role)?.value;
 }
 
+// Reads PRICE_PER_KWH/AVAILABLE_QTY back out of a contract's interval 0 —
+// used to notice when the seller's on_init changed our own bid terms
+// (a real counter-offer) rather than echoing them back unchanged.
+function extractInterval0(contract) {
+  const interval = contract?.commitments?.[0]?.commitmentAttributes?.intervals?.[0];
+  const payloads = interval?.payloads || [];
+  const find = (type) => payloads.find((p) => p.type === type)?.values?.[0];
+  return { price: find("PRICE_PER_KWH"), qty: find("AVAILABLE_QTY") };
+}
+
 module.exports = {
   NETWORK_ID,
   SELF_ID,
@@ -210,6 +220,7 @@ module.exports = {
   buildInit,
   buildConfirm,
   extractRevenueFlow,
+  extractInterval0,
   uuid,
   nowIso,
 };

@@ -13,6 +13,9 @@ const PORT = process.env.PORT || 4001;
 // The one real seller we can actually transact with — its own REST API is
 // the authoritative source of truth for what's really published right now
 // (a discovered_offers row can be stale: reset, sold, or long expired).
+// Also used for a direct, app-to-app demo-coordination notification (never
+// a real Beckn message) when we decline a counter-offer — see seller-app's
+// matching BUYER_APP_URL.
 const SELLER_APP_URL = process.env.SELLER_APP_URL || "http://localhost:4002";
 
 const app = express();
@@ -37,6 +40,10 @@ function tradeRow(row) {
     buyerDiscom: row.buyer_discom,
     requestedQty: row.requested_qty,
     pricePerKwh: row.price_per_kwh,
+    askingPricePerKwh: row.asking_price_per_kwh,
+    sellerPricePerKwh: row.seller_price_per_kwh,
+    sellerQty: row.seller_qty,
+    declineReason: row.decline_reason,
     status: row.status,
     settlementAmount: row.settlement_amount,
     errorMessage: row.error_message,
@@ -44,6 +51,43 @@ function tradeRow(row) {
     updatedAt: row.updated_at,
   };
 }
+
+// ---------- Protocol/decision timeline — mirrors seller-app's own ----------
+function logEvent(transactionId, action, direction, summary, payload) {
+  db.prepare("INSERT INTO events (transaction_id, action, direction, summary, payload, at) VALUES (?,?,?,?,?,?)").run(
+    transactionId,
+    action,
+    direction,
+    summary || null,
+    payload ? JSON.stringify(payload) : null,
+    beckn.nowIso()
+  );
+}
+
+app.get("/api/trade/:transactionId/timeline", (req, res) => {
+  const rows = db.prepare("SELECT * FROM events WHERE transaction_id=? ORDER BY id ASC").all(req.params.transactionId);
+  res.json(rows.map((r) => ({ action: r.action, direction: r.direction, summary: r.summary, payload: r.payload ? JSON.parse(r.payload) : null, at: r.at })));
+});
+
+// ---------- Direct app-to-app notification receiver (NOT a Beckn message) ----------
+// The seller platform posts here only when it declines a request outright
+// (no counter offered) — there's no real Beckn action for "the BPP
+// rejects the init with no response", so this is our own demo-coordination
+// channel, same category as our own resolveOffer()/my-offers calls into
+// the seller's /api/offers.
+app.post("/api/notify/:transactionId", (req, res) => {
+  const { transactionId } = req.params;
+  const { event, reason } = req.body || {};
+  const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId);
+  if (!row) return res.status(404).json({ error: "trade not found" });
+  if (event === "declined") {
+    const now = beckn.nowIso();
+    db.prepare("UPDATE trades SET status=?, decline_reason=?, updated_at=? WHERE transaction_id=?").run("DECLINED", reason || "Declined by seller", now, transactionId);
+    logEvent(transactionId, "decline", "received", `Seller declined${reason ? `: ${reason}` : ""}`);
+    broadcast("declined", tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId)));
+  }
+  res.json({ ok: true });
+});
 
 app.get("/api/health", (req, res) => res.status(200).send("ok"));
 
@@ -156,6 +200,7 @@ app.post("/api/reset", (req, res) => {
   try {
     db.exec("DELETE FROM trades");
     db.exec("DELETE FROM discovered_offers");
+    db.exec("DELETE FROM events");
     broadcast("reset", {});
     res.json({ ok: true });
   } catch (err) {
@@ -181,6 +226,11 @@ app.post("/api/discover", async (req, res) => {
 });
 
 // ---------- Buy: real init, works for a discovered offer OR a manually-entered one ----------
+// bidPricePerKwh is a real negotiating bid, not necessarily the seller's
+// listed ask — defaults to the ask when omitted or invalid, so the plain
+// "just buy at the listed price" path still works with zero extra typing.
+// Quantity is still always capped server-side to what's actually available
+// (never taken on faith from the client) — bidding is only ever on price.
 app.post("/api/buy", async (req, res) => {
   try {
     const offerId = String(req.body.offerId || "").trim();
@@ -193,17 +243,19 @@ app.post("/api/buy", async (req, res) => {
     // Re-resolve server-side right before acting — the UI already runs the
     // same check to show a live status while typing, but that's only a
     // courtesy; this is what actually stops it (the UI check is trivially
-    // bypassed by anyone calling this API directly). Price is never taken
-    // from the client: it's always the seller's real, currently-published
-    // figure, so it can never be haggled down (or up) by editing a form
-    // field or a raw request body.
+    // bypassed by anyone calling this API directly). The seller's real,
+    // currently-published ask is always known before we act — our own bid
+    // is allowed to differ from it (that's the negotiation), but never the
+    // available quantity.
     const resolution = await resolveOffer(offerId);
     if (!resolution.found) return res.status(404).json({ error: resolution.reason });
     if (!resolution.buyable) return res.status(409).json({ error: resolution.reason });
     if (requestedQty > resolution.availableQty) {
       return res.status(400).json({ error: `Only ${resolution.availableQty} kWh is available on this offer — ${requestedQty} kWh was requested.` });
     }
-    const pricePerKwh = resolution.pricePerKwh;
+    const askingPricePerKwh = resolution.pricePerKwh;
+    const bid = Number(req.body.bidPricePerKwh);
+    const pricePerKwh = bid > 0 ? bid : askingPricePerKwh;
     const quantityKwh = requestedQty;
 
     const { context, message } = beckn.buildInit({ offerId, quantityKwh, pricePerKwh, buyerDiscomId });
@@ -223,18 +275,21 @@ app.post("/api/buy", async (req, res) => {
         (result.text && result.text.trim()) ||
         `onix returned HTTP ${result.status || "(no response)"} with no readable body`;
       db.prepare(
-        `INSERT INTO trades (transaction_id, offer_id, bpp_id, buyer_discom, requested_qty, price_per_kwh, status, error_message, raw_context, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-      ).run(context.transactionId, offerId, beckn.SELLER_ID, buyerDiscomId, quantityKwh, pricePerKwh, "REJECTED", errorMessage, JSON.stringify({ context, message }), now, now);
+        `INSERT INTO trades (transaction_id, offer_id, bpp_id, buyer_discom, requested_qty, price_per_kwh, asking_price_per_kwh, status, error_message, raw_context, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).run(context.transactionId, offerId, beckn.SELLER_ID, buyerDiscomId, quantityKwh, pricePerKwh, askingPricePerKwh, "REJECTED", errorMessage, JSON.stringify({ context, message }), now, now);
+      logEvent(context.transactionId, "init", "sent", `Bid ₹${pricePerKwh}/kWh for ${quantityKwh} kWh`, { context, message });
+      logEvent(context.transactionId, "init", "received", `Rejected: ${errorMessage}`);
       const rejected = tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId));
       broadcast("rejected", rejected);
       return res.status(200).json({ ok: false, rejected: true, trade: rejected });
     }
 
     db.prepare(
-      `INSERT INTO trades (transaction_id, offer_id, bpp_id, buyer_discom, requested_qty, price_per_kwh, status, raw_context, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
-    ).run(context.transactionId, offerId, beckn.SELLER_ID, buyerDiscomId, quantityKwh, pricePerKwh, "PENDING", JSON.stringify({ context, message }), now, now);
+      `INSERT INTO trades (transaction_id, offer_id, bpp_id, buyer_discom, requested_qty, price_per_kwh, asking_price_per_kwh, status, raw_context, created_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(context.transactionId, offerId, beckn.SELLER_ID, buyerDiscomId, quantityKwh, pricePerKwh, askingPricePerKwh, "PENDING", JSON.stringify({ context, message }), now, now);
+    logEvent(context.transactionId, "init", "sent", `Bid ₹${pricePerKwh}/kWh for ${quantityKwh} kWh${bid > 0 && bid !== askingPricePerKwh ? ` (ask was ₹${askingPricePerKwh}/kWh)` : ""}`, { context, message });
 
     const trade = tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId));
     broadcast("buy_sent", trade);
@@ -243,6 +298,52 @@ app.post("/api/buy", async (req, res) => {
     console.error("buy failed:", err);
     res.status(500).json({ error: String(err) });
   }
+});
+
+// ---------- Buyer's real decision when the seller's on_init came back
+// with different terms than we bid (a genuine counter-offer) ----------
+async function sendRealConfirm(row) {
+  const stored = JSON.parse(row.raw_context);
+  const onConfirm = beckn.buildConfirm(stored.context, stored.message.contract);
+  const result = await beckn.postToOnix("/bap/caller/confirm", onConfirm);
+  const now = beckn.nowIso();
+  db.prepare("UPDATE trades SET status=?, raw_context=?, updated_at=? WHERE transaction_id=?").run("CONFIRMING", JSON.stringify(onConfirm), now, row.transaction_id);
+  logEvent(row.transaction_id, "confirm", "sent", "Confirmed", onConfirm);
+  broadcast("confirming", tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(row.transaction_id)));
+  if (!result.ok) console.error("confirm send failed:", result.status, result.json);
+  return result;
+}
+
+app.post("/api/trade/:transactionId/accept-counter", async (req, res) => {
+  const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(req.params.transactionId);
+  if (!row) return res.status(404).json({ error: "trade not found" });
+  if (row.status !== "AWAITING_MY_DECISION") return res.status(409).json({ error: `trade is ${row.status}, not awaiting a decision` });
+  try {
+    await sendRealConfirm(row);
+    res.json({ ok: true, trade: tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(row.transaction_id)) });
+  } catch (err) {
+    console.error("accept-counter failed:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/api/trade/:transactionId/decline-counter", async (req, res) => {
+  const { transactionId } = req.params;
+  const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId);
+  if (!row) return res.status(404).json({ error: "trade not found" });
+  if (row.status !== "AWAITING_MY_DECISION") return res.status(409).json({ error: `trade is ${row.status}, not awaiting a decision` });
+  const reason = req.body?.reason || "Buyer declined the counter-offer";
+  const now = beckn.nowIso();
+  db.prepare("UPDATE trades SET status=?, decline_reason=?, updated_at=? WHERE transaction_id=?").run("DECLINED", reason, now, transactionId);
+  logEvent(transactionId, "decline", "local", reason);
+  const updated = tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId));
+  broadcast("declined", updated);
+  fetch(`${SELLER_APP_URL}/api/notify/${transactionId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event: "counter_declined", reason }),
+  }).catch((e) => console.error("notify seller of decline failed (non-fatal):", e.message || e));
+  res.json({ ok: true, trade: updated });
 });
 
 // ---------- inbound webhook: real callbacks from onix-buyerapp's bapTxnReceiver ----------
@@ -280,26 +381,40 @@ app.post("/api/bap-webhook/:action", async (req, res) => {
     } else if (action === "on_init") {
       const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId);
       if (row) {
-        const onConfirm = beckn.buildConfirm(context, message.contract);
-        beckn
-          .postToOnix("/bap/caller/confirm", onConfirm)
-          .then((result) => {
-            const now = beckn.nowIso();
-            db.prepare("UPDATE trades SET status=?, raw_context=?, updated_at=? WHERE transaction_id=?").run("CONFIRMING", JSON.stringify(onConfirm), now, context.transactionId);
-            broadcast("confirming", tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId)));
-            if (!result.ok) console.error("confirm send failed:", result.status, result.json);
-          })
-          .catch((e) => console.error("confirm send error:", e));
+        const { price: sellerPrice, qty: sellerQty } = beckn.extractInterval0(message.contract);
+        const isCountered = (sellerPrice != null && sellerPrice !== row.price_per_kwh) || (sellerQty != null && sellerQty !== row.requested_qty);
+        const now = beckn.nowIso();
+
+        if (isCountered) {
+          // A real counter-offer — the seller's on_init returned different
+          // terms than we bid. This is a genuine decision point, so this
+          // does NOT auto-confirm; it waits for the buyer to explicitly
+          // accept-counter or decline-counter.
+          db.prepare("UPDATE trades SET status=?, seller_price_per_kwh=?, seller_qty=?, raw_context=?, updated_at=? WHERE transaction_id=?").run(
+            "AWAITING_MY_DECISION", sellerPrice, sellerQty, JSON.stringify({ context, message }), now, context.transactionId
+          );
+          logEvent(context.transactionId, "on_init", "received", `Seller countered: ₹${sellerPrice}/kWh for ${sellerQty} kWh (we bid ₹${row.price_per_kwh}/kWh for ${row.requested_qty} kWh)`, { context, message });
+          broadcast("seller_countered", tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId)));
+        } else {
+          // Terms match what we asked for — nothing left to actually
+          // decide, so confirm→on_confirm proceeds automatically, exactly
+          // as the simple "just buy at the listed price" path always has.
+          db.prepare("UPDATE trades SET raw_context=?, updated_at=? WHERE transaction_id=?").run(JSON.stringify({ context, message }), now, context.transactionId);
+          logEvent(context.transactionId, "on_init", "received", "Seller accepted our bid as-is", { context, message });
+          sendRealConfirm(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId)).catch((e) => console.error("auto-confirm error:", e));
+        }
       }
     } else if (action === "on_confirm") {
       const now = beckn.nowIso();
       db.prepare("UPDATE trades SET status=?, updated_at=? WHERE transaction_id=?").run("ACTIVE", now, context.transactionId);
+      logEvent(context.transactionId, "on_confirm", "received", "Trade is now ACTIVE", { context, message });
       broadcast("active", tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId)));
     } else if (action === "on_status") {
       const buyerCost = beckn.extractRevenueFlow(message.contract, "buyerPlatform");
       const settlementAmount = buyerCost != null ? Math.abs(buyerCost) : null;
       const now = beckn.nowIso();
       db.prepare("UPDATE trades SET status=?, settlement_amount=?, updated_at=? WHERE transaction_id=?").run("SETTLED", settlementAmount, now, context.transactionId);
+      logEvent(context.transactionId, "on_status", "received", `Settled — paid ₹${settlementAmount != null ? settlementAmount.toFixed(2) : "?"}`, { context, message });
       broadcast("settled", tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId)));
     }
     res.status(200).json(beckn.buildAck(context || {}));

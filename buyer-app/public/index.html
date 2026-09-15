@@ -49,6 +49,28 @@
   .resolve-status { font-size: 12px; min-height: 16px; width: 100%; }
   .resolve-status.ok { color: var(--accent); }
   .resolve-status.err { color: var(--red); }
+  .badge.deciding { background: rgba(245,185,66,0.15); color: var(--amber); }
+  .badge.declined { background: rgba(255,107,107,0.15); color: var(--red); }
+  .row-block { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .row-block .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .decision-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-top: 1px dashed var(--border); padding-top: 10px; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; font-size: 12px; }
+  .timeline { display: none; flex-direction: column; gap: 6px; border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 2px; }
+  .timeline.show { display: flex; }
+  .tl-hop { font-size: 12px; }
+  .tl-hop .tl-head { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+  .tl-hop .tl-action { font-weight: 600; font-family: monospace; }
+  .tl-hop .tl-dir { font-size: 10px; padding: 1px 6px; border-radius: 999px; text-transform: uppercase; }
+  .tl-hop .tl-dir.sent { background: rgba(90,169,255,0.15); color: var(--accent); }
+  .tl-hop .tl-dir.received { background: rgba(47,224,198,0.15); color: #2fe0c6; }
+  .tl-hop .tl-dir.local { background: rgba(245,185,66,0.15); color: var(--amber); }
+  .tl-hop .tl-time { color: var(--muted); font-size: 11px; }
+  .tl-hop .tl-summary { color: var(--muted); }
+  .tl-hop pre { display: none; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin: 6px 0 0; font-size: 11px; max-height: 240px; overflow: auto; }
+  .tl-hop pre.show { display: block; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--border); }
+  .filters .field input, .filters .field select { width: 110px; }
+  .filters label.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -65,16 +87,33 @@
     <h2>Discover offers</h2>
     <div class="hint">Fires a real <code>discover</code> against the shared discovery service. Results (if any) arrive asynchronously below.</div>
     <button class="secondary" id="discoverBtn">🔍 Refresh offers</button>
-    <div class="list" id="offers" style="margin-top:14px"><div class="empty">No offers discovered yet.</div></div>
+    <div class="filters" id="filters" style="margin-top:14px">
+      <div class="field"><label>Min price ₹/kWh</label><input type="number" step="0.1" id="fMinPrice" placeholder="any"></div>
+      <div class="field"><label>Max price ₹/kWh</label><input type="number" step="0.1" id="fMaxPrice" placeholder="any"></div>
+      <div class="field"><label>Min qty kWh</label><input type="number" step="0.1" id="fMinQty" placeholder="any"></div>
+      <div class="field"><label>Max qty kWh</label><input type="number" step="0.1" id="fMaxQty" placeholder="any"></div>
+      <div class="field">
+        <label>Sort by</label>
+        <select id="fSort">
+          <option value="recent">Newest first</option>
+          <option value="price_asc">Price: low → high</option>
+          <option value="price_desc">Price: high → low</option>
+          <option value="qty_desc">Quantity: high → low</option>
+        </select>
+      </div>
+      <label class="chk"><input type="checkbox" id="fOnlyBuyable"> Only buyable (ours)</label>
+      <button type="button" class="secondary" id="fClear">Clear filters</button>
+    </div>
+    <div class="list" id="offers"><div class="empty">No offers discovered yet.</div></div>
   </div>
 
   <div class="panel">
-    <h2>Buy directly</h2>
-    <div class="hint">If the offer you want isn't listed above yet, paste its real Offer ID here — copy it from the "My published offers" list on the <strong>Seller Platform</strong> page (it looks like <code>offer-demo-xxxxxxxx</code>, not a made-up value). Same real <code>init</code> call either way.</div>
+    <h2>Buy directly / place a bid</h2>
+    <div class="hint">If the offer you want isn't listed above yet, paste its real Offer ID here — copy it from the "My published offers" list on the <strong>Seller Platform</strong> page (it looks like <code>offer-demo-xxxxxxxx</code>, not a made-up value). The price field is a real negotiating bid: leave it at the seller's ask to buy outright, or lower it to test a real counter-offer — the seller can accept, counter back, or decline.</div>
     <form id="buyForm">
       <div class="field"><label>Offer ID</label><input type="text" name="offerId" id="offerIdInput" placeholder="offer-demo-xxxxxxxx" required autocomplete="off"></div>
       <div class="field"><label>Quantity (kWh)</label><input type="number" step="0.1" name="quantityKwh" id="qtyInput" value="" placeholder="—" required disabled></div>
-      <div class="field"><label>Price (₹/kWh)</label><input type="number" step="0.1" name="pricePerKwh" id="priceInput" value="" placeholder="—" readonly disabled></div>
+      <div class="field"><label>Your bid (₹/kWh)</label><input type="number" step="0.1" name="bidPricePerKwh" id="priceInput" value="" placeholder="—" disabled></div>
       <div class="field">
         <label>Trade as</label>
         <select name="buyerDiscomId">
@@ -82,7 +121,7 @@
           <option value="blocked">Blocked discom (watch it get rejected)</option>
         </select>
       </div>
-      <button type="submit" id="buyDirectlyBtn" disabled>Buy</button>
+      <button type="submit" id="buyDirectlyBtn" disabled>Send bid</button>
       <div class="resolve-status" id="resolveStatus"></div>
     </form>
   </div>
@@ -106,10 +145,34 @@ function toast(msg, isErr) {
 }
 
 function badge(status) {
-  const map = { PENDING: ["pending", "Pending"], CONFIRMING: ["confirming", "Confirming"], ACTIVE: ["active", "Active"], SETTLED: ["settled", "Settled"], REJECTED: ["rejected", "Rejected"] };
+  const map = { PENDING: ["pending", "Pending"], AWAITING_MY_DECISION: ["deciding", "Seller countered"], CONFIRMING: ["confirming", "Confirming"], ACTIVE: ["active", "Active"], SETTLED: ["settled", "Settled"], REJECTED: ["rejected", "Rejected"], DECLINED: ["declined", "Declined"] };
   const [cls, label] = map[status] || ["pending", status];
   return `<span class="badge ${cls}">${label}</span>`;
 }
+
+// ---------- Protocol/decision timeline — every real Beckn hop, expandable ----------
+const openTimelines = new Set();
+function toggleTimeline(txn) {
+  if (openTimelines.has(txn)) { openTimelines.delete(txn); } else { openTimelines.add(txn); }
+  refreshAll(true);
+}
+async function renderTimelineHtml(txn) {
+  if (!openTimelines.has(txn)) return "";
+  const events = await fetch(`/api/trade/${txn}/timeline`).then((r) => r.json()).catch(() => []);
+  if (!events.length) return `<div class="timeline show"><div class="empty">No events logged yet.</div></div>`;
+  const hops = events.map((e) => `
+    <div class="tl-hop">
+      <div class="tl-head" onclick="this.nextElementSibling.classList.toggle('show')">
+        <span class="tl-action">${e.action}</span>
+        <span class="tl-dir ${e.direction}">${e.direction}</span>
+        <span class="tl-time">${new Date(e.at).toLocaleTimeString()}</span>
+        <span class="tl-summary">${e.summary || ""}</span>
+      </div>
+      <pre>${e.payload ? escapeHtml(JSON.stringify(e.payload, null, 2)) : "(no payload)"}</pre>
+    </div>`).join("");
+  return `<div class="timeline show">${hops}</div>`;
+}
+function escapeHtml(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 
 // Whether a discovered offer is genuinely ours can NOT be determined by
 // comparing seller_id to "sellerapp.example.com" — that's the devkit's
@@ -140,26 +203,68 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleString();
 }
 
-async function refreshAll() {
+let lastOfferRows = [];
+
+async function refreshAll(force) {
   const [offers, trades, myOffers] = await Promise.all([
     fetch("/api/offers").then((r) => r.json()),
     fetch("/api/trades").then((r) => r.json()),
     fetch("/api/my-offers").then((r) => r.json()).catch(() => ({ offerIds: [] })),
   ]);
   myOfferIds = new Set(myOffers.offerIds || []);
+  lastOfferRows = offers;
   const offersJson = JSON.stringify(offers) + JSON.stringify([...myOfferIds]);
-  if (offersJson !== lastOffersJson) { lastOffersJson = offersJson; renderOffers(offers); }
-  const tradesJson = JSON.stringify(trades);
-  if (tradesJson !== lastTradesJson) { lastTradesJson = tradesJson; renderTrades(trades); }
+  if (force || offersJson !== lastOffersJson) { lastOffersJson = offersJson; renderOffers(applyFilters(offers)); }
+  const tradesJson = JSON.stringify(trades) + [...openTimelines].join(",");
+  if (force || tradesJson !== lastTradesJson) { lastTradesJson = tradesJson; await renderTrades(trades); }
 }
+
+// ---------- Client-side filter/sort of already-discovered offers — no
+// backend change needed, these are just the rows /api/offers already
+// returns, narrowed and reordered for what the buyer actually wants to see. ----------
+function applyFilters(list) {
+  const minPrice = parseFloat($("#fMinPrice").value);
+  const maxPrice = parseFloat($("#fMaxPrice").value);
+  const minQty = parseFloat($("#fMinQty").value);
+  const maxQty = parseFloat($("#fMaxQty").value);
+  const onlyBuyable = $("#fOnlyBuyable").checked;
+  const sort = $("#fSort").value;
+  let out = list.filter((o) => {
+    if (!isNaN(minPrice) && (o.price_per_kwh == null || o.price_per_kwh < minPrice)) return false;
+    if (!isNaN(maxPrice) && (o.price_per_kwh == null || o.price_per_kwh > maxPrice)) return false;
+    if (!isNaN(minQty) && (o.available_qty == null || o.available_qty < minQty)) return false;
+    if (!isNaN(maxQty) && (o.available_qty == null || o.available_qty > maxQty)) return false;
+    if (onlyBuyable && !myOfferIds.has(o.offer_id)) return false;
+    return true;
+  });
+  if (sort === "price_asc") out = out.slice().sort((a, b) => (a.price_per_kwh ?? Infinity) - (b.price_per_kwh ?? Infinity));
+  else if (sort === "price_desc") out = out.slice().sort((a, b) => (b.price_per_kwh ?? -Infinity) - (a.price_per_kwh ?? -Infinity));
+  else if (sort === "qty_desc") out = out.slice().sort((a, b) => (b.available_qty ?? -Infinity) - (a.available_qty ?? -Infinity));
+  return out;
+}
+// Script tag is at the end of <body>, so the filter controls above already
+// exist in the DOM — no need to wait for DOMContentLoaded.
+document.querySelectorAll(".filters input, .filters select").forEach((el) => {
+  el.addEventListener(el.tagName === "SELECT" || el.type === "checkbox" ? "change" : "input", () => renderOffers(applyFilters(lastOfferRows)));
+});
+$("#fClear").addEventListener("click", () => {
+  document.querySelectorAll(".filters input").forEach((el) => (el.type === "checkbox" ? (el.checked = false) : (el.value = "")));
+  $("#fSort").value = "recent";
+  renderOffers(applyFilters(lastOfferRows));
+});
 
 function renderOffers(list) {
   const el = $("#offers");
-  if (!list.length) { el.innerHTML = '<div class="empty">No offers discovered yet.</div>'; return; }
+  if (!list.length) {
+    el.innerHTML = lastOfferRows.length
+      ? '<div class="empty">No offers match the current filters.</div>'
+      : '<div class="empty">No offers discovered yet.</div>';
+    return;
+  }
   el.innerHTML = list.map((o) => {
     const isOwn = myOfferIds.has(o.offer_id);
     const action = isOwn
-      ? `<button onclick="buyFromCard('${o.offer_id}', ${o.available_qty}, ${o.price_per_kwh})">Buy</button>`
+      ? `<button onclick="buyFromCard('${o.offer_id}', ${o.available_qty}, ${o.price_per_kwh})">Buy at ask</button>`
       : `<span class="tag" title="Not currently live on our own Seller Platform's real catalog — either a different real network participant's offer (this demo has no live routing endpoint for their platform), or one of our own past offers that's no longer live">view only</span>`;
     return `
     <div class="row">
@@ -172,25 +277,64 @@ function renderOffers(list) {
   }).join("");
 }
 
-function renderTrades(list) {
+async function renderTrades(list) {
   const el = $("#trades");
   if (!list.length) { el.innerHTML = '<div class="empty">No trades yet.</div>'; return; }
-  el.innerHTML = list.map((t) => `
-    <div class="row">
-      <div class="meta">
-        <div class="primary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh — ${t.offerId}</div>
-        <div class="secondary">as ${t.buyerDiscom}${t.settlementAmount ? ` · paid ₹${t.settlementAmount.toFixed(2)}` : ""}${t.errorMessage ? ` · ${t.errorMessage}` : ""}</div>
+  const blocks = await Promise.all(list.map(async (t) => {
+    const bidLine = t.askingPricePerKwh != null && t.askingPricePerKwh !== t.pricePerKwh
+      ? ` <span style="color:var(--muted)">(seller's ask was ₹${t.askingPricePerKwh}/kWh)</span>`
+      : "";
+    const counterLine = t.status === "AWAITING_MY_DECISION"
+      ? `<div class="secondary" style="color:var(--amber)">Seller countered: ₹${t.sellerPricePerKwh}/kWh for ${t.sellerQty} kWh</div>` : "";
+    const declineLine = t.status === "DECLINED" && t.declineReason ? `<div class="secondary">Reason: ${t.declineReason}</div>` : "";
+    const decisionForm = t.status === "AWAITING_MY_DECISION" ? `
+      <div class="decision-form">
+        <button onclick="acceptCounter('${t.transactionId}')">Accept counter — confirm</button>
+        <button class="danger" onclick="declineCounter('${t.transactionId}')">Decline counter</button>
+      </div>` : "";
+    const timelineHtml = await renderTimelineHtml(t.transactionId);
+    return `
+    <div class="row-block" data-txn="${t.transactionId}">
+      <div class="top">
+        <div class="meta">
+          <div class="primary">We bid ₹${t.pricePerKwh}/kWh for ${t.requestedQty} kWh${bidLine} — ${t.offerId}</div>
+          <div class="secondary">as ${t.buyerDiscom}${t.settlementAmount ? ` · paid ₹${t.settlementAmount.toFixed(2)}` : ""}${t.errorMessage ? ` · ${t.errorMessage}` : ""}</div>
+          ${counterLine}${declineLine}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${badge(t.status)}
+          <button class="ghost" onclick="toggleTimeline('${t.transactionId}')">${openTimelines.has(t.transactionId) ? "Hide" : "Show"} trace</button>
+        </div>
       </div>
-      ${badge(t.status)}
-    </div>`).join("");
+      ${decisionForm}
+      ${timelineHtml}
+    </div>`;
+  }));
+  el.innerHTML = blocks.join("");
 }
 
-async function buy(offerId, quantityKwh, pricePerKwh, buyerDiscomId) {
-  const res = await fetch("/api/buy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId, quantityKwh, pricePerKwh, buyerDiscomId }) });
+async function acceptCounter(txn) {
+  const res = await fetch(`/api/trade/${txn}/accept-counter`, { method: "POST" });
+  const body = await res.json();
+  if (!res.ok) { toast("Accept failed: " + (body.error || res.status), true); return; }
+  toast("Counter accepted — confirm sent");
+  refreshAll();
+}
+async function declineCounter(txn) {
+  const reason = prompt("Optional reason for declining (shown to the seller):", "") || undefined;
+  const res = await fetch(`/api/trade/${txn}/decline-counter`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) });
+  const body = await res.json();
+  if (!res.ok) { toast("Decline failed: " + (body.error || res.status), true); return; }
+  toast("Declined — seller notified");
+  refreshAll();
+}
+
+async function buy(offerId, quantityKwh, bidPricePerKwh, buyerDiscomId) {
+  const res = await fetch("/api/buy", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId, quantityKwh, bidPricePerKwh, buyerDiscomId }) });
   const body = await res.json();
   if (body.rejected) { toast("Rejected: " + (body.trade.errorMessage || "policy violation"), true); refreshAll(); return; }
   if (!res.ok) { toast((body.error || "Buy failed: " + res.status), true); return; }
-  toast("init sent — waiting for seller");
+  toast("Bid sent — waiting for seller");
   refreshAll();
 }
 
@@ -199,10 +343,10 @@ function buyFromCard(offerId, quantityKwh, pricePerKwh) {
 }
 
 // ---------- "Buy directly" (paste an Offer ID): live-resolve it against
-// the real Seller Platform before letting Buy be pressed at all. Price is
-// always the seller's real published figure — never a free-typed field,
-// since the seller alone sets it, not the buyer. Quantity is capped to
-// what's actually available. ----------
+// the real Seller Platform before letting Buy be pressed at all. Quantity
+// is always capped to what's actually available; the bid price is
+// prefilled from the seller's real ask but is a free, editable field — a
+// real negotiating bid, never taken on faith beyond that server-side cap. ----------
 const offerIdInput = $("#offerIdInput");
 const qtyInput = $("#qtyInput");
 const priceInput = $("#priceInput");
@@ -221,6 +365,7 @@ async function resolveOfferId() {
   currentResolution = null;
   buyDirectlyBtn.disabled = true;
   qtyInput.disabled = true;
+  priceInput.disabled = true;
   priceInput.value = "";
   qtyInput.value = "";
   if (!offerId) { setResolveStatus(""); return; }
@@ -233,12 +378,18 @@ async function resolveOfferId() {
   currentResolution = r;
   if (!r.found) { setResolveStatus("✗ " + r.reason, true); return; }
   if (!r.buyable) { setResolveStatus("✗ " + r.reason, true); return; }
+  // Prefills with the seller's real ask — editable from here, since this
+  // is now a genuine bid, not a locked display of the seller's price. The
+  // server independently re-validates everything except the bid price
+  // itself (the buyer is always free to bid whatever it wants; only the
+  // quantity is capped server-side).
   priceInput.value = r.pricePerKwh;
+  priceInput.disabled = false;
   qtyInput.value = r.availableQty;
   qtyInput.max = r.availableQty;
   qtyInput.disabled = false;
   buyDirectlyBtn.disabled = false;
-  setResolveStatus(`✓ Real offer from ${r.sellerId} — ${r.availableQty} kWh @ ₹${r.pricePerKwh}/kWh available`);
+  setResolveStatus(`✓ Real offer from ${r.sellerId} — asking ₹${r.pricePerKwh}/kWh, ${r.availableQty} kWh available. Edit the bid price to negotiate.`);
 }
 
 offerIdInput.addEventListener("input", () => { clearTimeout(resolveDebounce); resolveDebounce = setTimeout(resolveOfferId, 350); });
@@ -248,16 +399,14 @@ $("#buyForm").addEventListener("submit", (e) => {
   if (!currentResolution || !currentResolution.buyable) { setResolveStatus("Resolve a real, buyable offer ID first.", true); return; }
   const fd = new FormData(e.target);
   const quantityKwh = Number(fd.get("quantityKwh"));
+  const bidPricePerKwh = Number(fd.get("bidPricePerKwh"));
   if (!quantityKwh || quantityKwh <= 0) { setResolveStatus("Enter a positive quantity.", true); return; }
   if (quantityKwh > currentResolution.availableQty) {
     setResolveStatus(`Only ${currentResolution.availableQty} kWh is available — lower the quantity.`, true);
     return;
   }
-  // Price always comes from the resolved offer, never the (read-only,
-  // but belt-and-suspenders) form field — the server re-checks this
-  // exact thing independently regardless, so this can't be bypassed by
-  // re-enabling the field via devtools.
-  buy(currentResolution.offerId, quantityKwh, currentResolution.pricePerKwh, fd.get("buyerDiscomId"));
+  if (!bidPricePerKwh || bidPricePerKwh <= 0) { setResolveStatus("Enter a positive bid price.", true); return; }
+  buy(currentResolution.offerId, quantityKwh, bidPricePerKwh, fd.get("buyerDiscomId"));
 });
 
 $("#discoverBtn").addEventListener("click", async () => {
@@ -294,11 +443,13 @@ function connectWs() {
   ws.onmessage = (ev) => {
     const { type, data } = JSON.parse(ev.data);
     if (type === "offers_updated") toast(`${data.count} offer(s) discovered`);
-    if (type === "buy_sent") toast("init sent");
+    if (type === "buy_sent") toast("Bid sent");
     if (type === "rejected") toast("Rejected: " + (data.errorMessage || "policy violation"), true);
-    if (type === "confirming") toast("Seller replied — confirm sent");
+    if (type === "seller_countered") toast(`Seller countered: ₹${data.sellerPricePerKwh}/kWh for ${data.sellerQty} kWh`);
+    if (type === "confirming") toast("Confirm sent");
     if (type === "active") toast("Trade confirmed — now ACTIVE");
     if (type === "settled") toast(`Settled — paid ₹${data.settlementAmount.toFixed(2)}`);
+    if (type === "declined") toast(data.declineReason ? `Declined: ${data.declineReason}` : "Seller declined", true);
     if (type === "reset") toast("Reset from elsewhere — refreshing");
     refreshAll();
   };

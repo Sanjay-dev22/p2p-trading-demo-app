@@ -45,6 +45,27 @@
   .conn { font-size: 11px; color: var(--muted); }
   .conn.up::before { content: "● "; color: var(--accent); }
   .conn.down::before { content: "● "; color: var(--red); }
+  .badge.declined { background: rgba(255,107,107,0.15); color: var(--red); }
+  .row-block { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .row-block .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .decision-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-top: 1px dashed var(--border); padding-top: 10px; }
+  .decision-form input { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 8px; width: 100px; font-size: 13px; }
+  .decision-form .lbl { font-size: 11px; color: var(--muted); }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; font-size: 12px; }
+  .timeline { display: none; flex-direction: column; gap: 6px; border-top: 1px dashed var(--border); padding-top: 10px; margin-top: 2px; }
+  .timeline.show { display: flex; }
+  .tl-hop { font-size: 12px; }
+  .tl-hop .tl-head { display: flex; gap: 8px; align-items: baseline; cursor: pointer; }
+  .tl-hop .tl-action { font-weight: 600; font-family: monospace; }
+  .tl-hop .tl-dir { font-size: 10px; padding: 1px 6px; border-radius: 999px; text-transform: uppercase; }
+  .tl-hop .tl-dir.sent { background: rgba(47,224,198,0.15); color: var(--accent); }
+  .tl-hop .tl-dir.received { background: rgba(90,169,255,0.15); color: #5aa9ff; }
+  .tl-hop .tl-dir.local { background: rgba(245,185,66,0.15); color: var(--amber); }
+  .tl-hop .tl-time { color: var(--muted); font-size: 11px; }
+  .tl-hop .tl-summary { color: var(--muted); }
+  .tl-hop pre { display: none; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin: 6px 0 0; font-size: 11px; max-height: 240px; overflow: auto; }
+  .tl-hop pre.show { display: block; }
+  .delivery-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -99,20 +120,55 @@ function toast(msg) {
 }
 
 function badge(status) {
-  const map = { PENDING_ACCEPT: ["pending", "Pending"], AWAITING_CONFIRM: ["awaiting", "Awaiting confirm"], ACTIVE: ["active", "Active"], SETTLED: ["settled", "Settled"] };
+  const map = { PENDING_ACCEPT: ["pending", "Awaiting your decision"], AWAITING_CONFIRM: ["awaiting", "Awaiting buyer confirm"], ACTIVE: ["active", "Active"], SETTLED: ["settled", "Settled"], DECLINED: ["declined", "Declined"] };
   const [cls, label] = map[status] || ["awaiting", status];
   return `<span class="badge ${cls}">${label}</span>`;
 }
 
-async function refreshAll() {
+// ---------- Protocol/decision timeline — every real Beckn hop, expandable ----------
+const openTimelines = new Set();
+async function toggleTimeline(txn) {
+  if (openTimelines.has(txn)) { openTimelines.delete(txn); } else { openTimelines.add(txn); }
+  refreshAll(true);
+}
+async function renderTimelineHtml(txn) {
+  if (!openTimelines.has(txn)) return "";
+  const events = await fetch(`/api/trade/${txn}/timeline`).then((r) => r.json()).catch(() => []);
+  if (!events.length) return `<div class="timeline show"><div class="empty">No events logged yet.</div></div>`;
+  const hops = events.map((e, i) => `
+    <div class="tl-hop">
+      <div class="tl-head" onclick="this.nextElementSibling.classList.toggle('show')">
+        <span class="tl-action">${e.action}</span>
+        <span class="tl-dir ${e.direction}">${e.direction}</span>
+        <span class="tl-time">${new Date(e.at).toLocaleTimeString()}</span>
+        <span class="tl-summary">${e.summary || ""}</span>
+      </div>
+      <pre>${e.payload ? escapeHtml(JSON.stringify(e.payload, null, 2)) : "(no payload)"}</pre>
+    </div>`).join("");
+  return `<div class="timeline show">${hops}</div>`;
+}
+function escapeHtml(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+// Avoid a full DOM replace when nothing actually changed — these rows now
+// contain live-editable inputs (counter price/qty, delivered-kWh reading),
+// and a naive re-render on every 5s poll would wipe out whatever the seller
+// is mid-typing. force=true (used by toggleTimeline) always re-renders.
+let lastRequestsJson = "";
+let lastTradesJson = "";
+
+async function refreshAll(force) {
   const [offers, trades, earnings] = await Promise.all([
     fetch("/api/offers").then((r) => r.json()),
     fetch("/api/trades").then((r) => r.json()),
     fetch("/api/earnings").then((r) => r.json()),
   ]);
   renderOffers(offers);
-  renderRequests(trades.filter((t) => t.status === "PENDING_ACCEPT"));
-  renderTrades(trades.filter((t) => t.status !== "PENDING_ACCEPT"));
+  const requests = trades.filter((t) => t.status === "PENDING_ACCEPT");
+  const settledOrActive = trades.filter((t) => t.status !== "PENDING_ACCEPT");
+  const reqJson = JSON.stringify(requests) + [...openTimelines].join(",");
+  const tradeJson = JSON.stringify(settledOrActive) + [...openTimelines].join(",");
+  if (force || reqJson !== lastRequestsJson) { lastRequestsJson = reqJson; await renderRequests(requests); }
+  if (force || tradeJson !== lastTradesJson) { lastTradesJson = tradeJson; await renderTrades(settledOrActive); }
   $("#earnings").textContent = "₹" + Number(earnings.total).toFixed(2);
 }
 
@@ -138,47 +194,106 @@ function copyOfferId(id, btn) {
   }
 }
 
-function renderRequests(list) {
+async function renderRequests(list) {
   const el = $("#requests");
   if (!list.length) { el.innerHTML = '<div class="empty">No incoming requests yet.</div>'; return; }
-  el.innerHTML = list.map((t) => `
-    <div class="row" data-txn="${t.transactionId}">
-      <div class="meta">
-        <div class="primary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh</div>
-        <div class="secondary">from ${t.bapId} · discom: ${t.buyerDiscom}</div>
+  const blocks = await Promise.all(list.map(async (t) => {
+    const askLine = t.askingPricePerKwh != null && t.askingPricePerKwh !== t.pricePerKwh
+      ? ` <span style="color:var(--muted)">(our ask: ₹${t.askingPricePerKwh}/kWh)</span>`
+      : "";
+    const timelineHtml = await renderTimelineHtml(t.transactionId);
+    return `
+    <div class="row-block" data-txn="${t.transactionId}">
+      <div class="top">
+        <div class="meta">
+          <div class="primary">Buyer bids ₹${t.pricePerKwh}/kWh for ${t.requestedQty} kWh${askLine}</div>
+          <div class="secondary">from ${t.bapId} · discom: ${t.buyerDiscom}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${badge(t.status)}
+          <button class="ghost" onclick="toggleTimeline('${t.transactionId}')">${openTimelines.has(t.transactionId) ? "Hide" : "Show"} trace</button>
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px">
-        ${badge(t.status)}
-        <button onclick="accept('${t.transactionId}')">Accept</button>
+      <div class="decision-form">
+        <button onclick="respond('${t.transactionId}','accept')">Accept bid</button>
+        <span class="lbl">or counter:</span>
+        <input type="number" step="0.1" placeholder="₹/kWh" id="cp-${t.transactionId}" value="${t.askingPricePerKwh || t.pricePerKwh}">
+        <input type="number" step="0.1" placeholder="kWh" id="cq-${t.transactionId}" value="${t.requestedQty}">
+        <button class="amber" onclick="counter('${t.transactionId}')">Send counter-offer</button>
+        <button class="secondary" style="background:transparent;color:var(--red);border-color:var(--red)" onclick="decline('${t.transactionId}')">Decline</button>
       </div>
-    </div>`).join("");
+      ${timelineHtml}
+    </div>`;
+  }));
+  el.innerHTML = blocks.join("");
 }
 
-function renderTrades(list) {
+async function renderTrades(list) {
   const el = $("#trades");
   if (!list.length) { el.innerHTML = '<div class="empty">No trades yet.</div>'; return; }
-  el.innerHTML = list.map((t) => `
-    <div class="row" data-txn="${t.transactionId}">
-      <div class="meta">
-        <div class="primary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh${t.finalAlloc ? ` — delivered ${t.finalAlloc} kWh` : ""}</div>
-        <div class="secondary">from ${t.bapId} · discom: ${t.buyerDiscom}${t.settlementAmount ? ` · settled ₹${t.settlementAmount.toFixed(2)}` : ""}</div>
+  const blocks = await Promise.all(list.map(async (t) => {
+    const counterLine = t.counterPricePerKwh
+      ? ` <span style="color:var(--muted)">(we countered ₹${t.counterPricePerKwh}/kWh for ${t.counterQty} kWh)</span>`
+      : "";
+    const declineLine = t.status === "DECLINED" && t.declineReason ? `<div class="secondary">Reason: ${t.declineReason}</div>` : "";
+    const timelineHtml = await renderTimelineHtml(t.transactionId);
+    return `
+    <div class="row-block" data-txn="${t.transactionId}">
+      <div class="top">
+        <div class="meta">
+          <div class="primary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh${counterLine}${t.finalAlloc ? ` — delivered ${t.finalAlloc} kWh` : ""}</div>
+          <div class="secondary">from ${t.bapId} · discom: ${t.buyerDiscom}${t.settlementAmount ? ` · settled ₹${t.settlementAmount.toFixed(2)}` : ""}</div>
+          ${declineLine}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${badge(t.status)}
+          <button class="ghost" onclick="toggleTimeline('${t.transactionId}')">${openTimelines.has(t.transactionId) ? "Hide" : "Show"} trace</button>
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px">
-        ${badge(t.status)}
-        ${t.status === "ACTIVE" ? `<button class="amber" onclick="deliver('${t.transactionId}')">Mark as delivered</button>` : ""}
-      </div>
-    </div>`).join("");
+      ${t.status === "ACTIVE" ? `
+      <div class="decision-form" id="deliver-form-${t.transactionId}">
+        <span class="lbl">Delivered (meter reading, kWh):</span>
+        <input type="number" step="0.1" id="fa-${t.transactionId}" value="${t.requestedQty}" oninput="this.dataset.touched='1'">
+        <button class="amber" onclick="deliver('${t.transactionId}')">Report delivery &amp; settle</button>
+        <div class="delivery-note">This is the seller's real smart-meter reading after physical delivery — real delivered energy is almost never exactly what was requested (line losses, timing drift), and settlement always pays on this figure, not the original ask. Suggested value shown is one plausible reading; edit it to whatever the (simulated) meter actually reports.</div>
+      </div>` : ""}
+      ${timelineHtml}
+    </div>`;
+  }));
+  el.innerHTML = blocks.join("");
+  // Fill in a randomized-but-editable suggestion for any delivery form just rendered.
+  list.filter((t) => t.status === "ACTIVE").forEach((t) => {
+    fetch(`/api/deliver/${t.transactionId}/suggest`).then((r) => r.json()).then((s) => {
+      const input = document.getElementById(`fa-${t.transactionId}`);
+      if (input && !input.dataset.touched) input.value = s.suggestedFinalAlloc;
+    }).catch(() => {});
+  });
 }
 
-async function accept(txn) {
-  const res = await fetch(`/api/accept/${txn}`, { method: "POST" });
+async function respond(txn, decision, extra) {
+  const res = await fetch(`/api/respond/${txn}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision, ...extra }) });
   const body = await res.json();
-  if (!res.ok) { toast("Accept failed: " + (body.error || res.status)); return; }
-  toast("on_init sent — waiting for buyer to confirm");
+  if (!res.ok) { toast((decision === "decline" ? "Decline" : decision === "counter" ? "Counter-offer" : "Accept") + " failed: " + (body.error || res.status)); return; }
+  if (decision === "accept") toast("Bid accepted — on_init sent, waiting for buyer to confirm");
+  else if (decision === "counter") toast("Counter-offer sent — waiting for buyer's decision");
+  else toast("Declined — buyer notified");
+  refreshAll();
+}
+function counter(txn) {
+  const pricePerKwh = Number(document.getElementById(`cp-${txn}`).value);
+  const quantityKwh = Number(document.getElementById(`cq-${txn}`).value);
+  if (!pricePerKwh || !quantityKwh) { toast("Enter a positive counter price and quantity"); return; }
+  respond(txn, "counter", { pricePerKwh, quantityKwh });
+}
+function decline(txn) {
+  const reason = prompt("Optional reason for declining (shown to the buyer):", "") || undefined;
+  respond(txn, "decline", { reason });
 }
 
 async function deliver(txn) {
-  const res = await fetch(`/api/deliver/${txn}`, { method: "POST" });
+  const finalAlloc = Number(document.getElementById(`fa-${txn}`).value);
+  if (!finalAlloc || finalAlloc <= 0) { toast("Enter a positive delivered quantity"); return; }
+  const res = await fetch(`/api/deliver/${txn}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ finalAlloc }) });
   const body = await res.json();
   if (!res.ok) { toast("Deliver failed: " + (body.error || res.status)); return; }
   toast(`Settled ₹${body.trade.settlementAmount.toFixed(2)} (delivered ${body.trade.finalAlloc} kWh)`);
@@ -217,6 +332,8 @@ function connectWs() {
     const { type, data } = JSON.parse(ev.data);
     if (type === "incoming_request") toast(`New request: ${data.requestedQty} kWh from ${data.bapId}`);
     if (type === "accepted") toast("Accepted — on_init sent");
+    if (type === "countered") toast("Counter-offer sent — waiting for buyer");
+    if (type === "declined") toast(data.declineReason ? `Declined: ${data.declineReason}` : "Buyer declined our counter-offer");
     if (type === "active") toast("Trade confirmed — now ACTIVE");
     if (type === "settled") toast(`Settled ₹${data.settlementAmount.toFixed(2)}`);
     if (type === "reset") toast("Reset from elsewhere — refreshing");

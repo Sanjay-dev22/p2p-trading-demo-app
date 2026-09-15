@@ -1,437 +1,140 @@
-# P2P Energy Trading — Live Demo App
+# P2P Trading Demo App
 
-Two real web apps — a **Seller Platform** and a **Buyer Platform** — trade
-real solar energy over a real, local [Beckn Protocol](https://becknprotocol.io/)
-network running on your own machine in Docker. Every message (`publish`,
-`init`, `confirm`, settlement) is a genuine, signed, policy-checked call —
-nothing is scripted or faked. You click; the network really responds.
+Two real, independent web apps — a **Seller Platform** and a **Buyer
+Platform** — that trade real solar energy over the real local Beckn/onix
+network (`ies-devkit/devkits/p2p-trading-ies-wave2`), replacing the
+`fidedocker/sandbox-2.0` fixture-replay stub the devkit ships with.
 
-**This guide assumes you have never used Docker, Node.js, or this project
-before, and are starting on a completely empty computer.** Follow it in
-order, top to bottom, without skipping steps. Every command below is
-written to be copy-pasted exactly as shown.
+See `ARCHITECTURE.md` for the (currently shelved, future) production-grade
+design, and `DEMO-APP-PLAN.md` for the design this actually implements.
 
----
+## What's real here
 
-## Before you start: how to read this guide
+Every message (`catalog/publish`, `discover`, `init`, `on_init`, `confirm`,
+`on_confirm`, `on_status`) is a genuine, signed Beckn v2 call through the
+real `onix-buyerapp`/`onix-sellerapp` adapters — real schema validation,
+real `.rego` policy enforcement (including a real live rejection path),
+real settlement math. Nothing is scripted or replayed; every number in the
+UI came from a real HTTP round trip started by an actual click.
 
-- Every gray code box below is something you **type or paste into a
-  terminal window**, then press Enter.
-- **Windows:** use **Git Bash**, not Command Prompt and not PowerShell.
-  Git Bash gets installed automatically in the next step. All commands in
-  this guide are written for it.
-- **Mac:** use the built-in **Terminal** app (search for "Terminal" with
-  Spotlight, ⌘+Space).
-- **Never double-click a `.sh` script file in File Explorer / Finder.**
-  On Windows especially, double-clicking opens a console window that runs
-  the script and then **closes itself instantly**, whether it succeeded
-  or failed — you can't read what happened, and it looks broken even when
-  it isn't. Every command in this guide is meant to be typed into a
-  terminal window that you opened yourself and that stays open.
-- If any command's output includes the words `error`, `not found`,
-  `cannot find`, or `refused`, **stop and check the Troubleshooting
-  section at the bottom** before continuing — don't keep running later
-  steps on top of a failed one.
+**Storage**: SQLite (one file per app, `seller-app/seller-app.db` /
+`buyer-app/buyer-app.db`) — no external DB server. **Live updates**: a
+plain WebSocket per app — no Redis, no job queue. **Auth**: none — you
+operate both platforms yourself, exactly like the underlying devkit's own
+demo does.
 
----
+## One-time setup
 
-## Step 1 — Install the three prerequisites
-
-You need three programs installed. If you're not sure whether you already
-have one, run its check command anyway — it's harmless.
-
-### 1a. Git
-
-Download and install from **https://git-scm.com/downloads** (accept all
-default options during install — on Windows this is also what installs
-Git Bash).
-
-Check it worked (open a **new** terminal window first, so it picks up the
-fresh install):
-```bash
-git --version
-```
-You should see something like `git version 2.4x.x`. If you see
-`command not found` / `'git' is not recognized`, the install didn't
-finish, or you need to close and reopen your terminal.
-
-### 1b. Node.js
-
-Download the **LTS** version from **https://nodejs.org** and install it
-(default options).
-
-Check:
-```bash
-node --version
-npm --version
-```
-You need Node **v22.5 or newer** (this app uses Node's own built-in
-SQLite support, added in that version — v24, the current LTS, is fine
-too). If the number before the first dot is 20 or lower, uninstall and
-reinstall the LTS version from the link above.
-
-### 1c. Docker Desktop
-
-Download from **https://www.docker.com/products/docker-desktop/** and
-install it. **After installing, you must open the Docker Desktop
-application** (Start Menu / Applications) **and wait until it says
-"Docker Desktop is running"** in its own window — a whale icon in your
-system tray/menu bar turning steady (not animating) is the same signal.
-This step is easy to miss and is the single most common reason the next
-steps fail.
-
-Check, once Docker Desktop is fully started:
-```bash
-docker --version
-docker compose version
-```
-Both must print a version number, not an error. If you get a "cannot
-connect to the Docker daemon" error, Docker Desktop isn't running yet —
-open it and wait, then try again.
-
----
-
-## Step 2 — Create a folder and download this project
-
-Pick one place on your computer for this — your Desktop is simplest. The
-commands below create a folder there called `p2p-trading-demo` and
-download this project into it.
+The Beckn network itself lives in the working devkit copy at
+`p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/` (not the read-only
+reference clone under `ies-devkit/`). Its `install/docker-compose.yml` has
+`sandbox-buyerapp`/`sandbox-sellerapp` commented out, and
+`config/local-p2p-trading-routing-{BuyerApp-BapReceiver,SellerApp-BppReceiver}.yaml`
+repointed at `host.docker.internal:4001`/`:4002` — this app's own ports —
+instead of those containers.
 
 ```bash
-cd ~/Desktop
-mkdir p2p-trading-demo
-cd p2p-trading-demo
-git clone https://github.com/Sanjay-dev22/p2p-trading-demo-app.git .
-```
-
-**Every command in the rest of this guide assumes your terminal's current
-folder is this exact `p2p-trading-demo` folder.** If a later command
-fails with "no such file or directory," you've likely changed folders (or
-opened a new terminal window, which always starts back at your home
-folder) — run this to get back, then retry:
-```bash
-cd ~/Desktop/p2p-trading-demo
-```
-You can check where you currently are at any time with:
-```bash
-pwd
-```
-
----
-
-## Step 3 — Start the real Beckn network (Docker)
-
-This starts 14 small containers on your own machine: the two trading
-platforms' protocol adapters, a router, two settlement ledgers, and their
-supporting caches. Nothing here talks to the internet except two real,
-already-live services this project depends on (a schema registry and a
-policy registry) — everything else is fully local.
-
-```bash
-cd network/devkits/p2p-trading-ies-wave2/install
+cd p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/install
 docker compose up -d
+docker compose ps   # confirm everything is Up/healthy — no sandbox-buyerapp/sandbox-sellerapp rows
 ```
 
-The first time you run this, Docker needs to download the container
-images — this can take a few minutes depending on your internet
-connection. You'll see a wall of text; that's normal.
-
-**Check everything actually started:**
+Install each app's dependencies once:
 ```bash
-docker compose ps
+cd p2p-trading-app/seller-app && npm install
+cd ../buyer-app && npm install
 ```
-You should see 14 rows. Every row's `STATUS` column should say `Up ...`
-(the redis and sandbox-ledger rows will additionally say `(healthy)` after
-about 15-20 seconds — if you check immediately they may briefly say
-`(health: starting)`, which is fine; just wait and re-run the command).
-If any row is missing, or says `Exited`, see Troubleshooting.
 
-Leave this terminal window open (or close it — unlike the app servers in
-the next step, these are background containers and keep running either
-way). Go back to your project folder for the next step:
+## Running the demo
+
+Two terminals, from `p2p-trading-app/`:
 ```bash
-cd ~/Desktop/p2p-trading-demo
+cd seller-app && npm start   # http://localhost:4002
+cd buyer-app  && npm start   # http://localhost:4001
 ```
 
----
+Open both URLs — ideally side by side, two browser windows. Live updates
+push over WebSocket in both directions; nothing needs a manual refresh.
 
-## Step 4 — Install and start the Seller Platform
+## The demo script
 
-Open a terminal window (or use your current one) and run:
+1. **Seller** (`:4002`): type a quantity/price, click **Publish offer**.
+   This really calls `catalog/publish` on `onix-sellerapp`.
+2. **Buyer** (`:4001`): paste that offer's id into "Buy directly / place a
+   bid" (or wait — "Discover offers" fires a real `discover` too, though
+   the shared discovery service it hits doesn't reliably echo back a very
+   recent publish in this sandbox — see the honesty note below). The bid
+   price field is prefilled with the seller's real ask but is editable —
+   leave it as-is to buy outright, or lower it to negotiate. Click
+   **Send bid**. This fires a real, signed `init` carrying that price as
+   the buyer's actual bid.
+3. **Seller**: the request appears live in "Incoming requests," showing the
+   bid against the seller's own current ask. Three real outcomes, not one:
+   - **Accept bid** — sends a real `on_init` echoing the buyer's terms.
+   - **Send counter-offer** — sends a real `on_init` with the seller's own
+     price/quantity instead (same message shape, different numbers).
+   - **Decline** — no onix call at all (a BPP simply never answering an
+     `init` is valid Beckn behavior); the buyer is told directly over a
+     small app-to-app notification endpoint, since there's no real
+     NACK-shaped `on_init` to send for this.
+4. If the seller countered, the buyer sees "Seller countered: ₹X/kWh for Y
+   kWh" with **Accept counter** (sends a real `confirm`) or **Decline
+   counter** (no network message; the seller is notified the same way as
+   step 3's decline). If the seller's `on_init` matched the original bid
+   exactly, this step is skipped — `confirm` fires automatically, exactly
+   as a plain accept always has.
+5. Once confirmed, seller auto-sends `on_confirm` on receiving `confirm`.
+   Both dashboards flip to **Active**, live.
+6. **Seller**: the active trade shows a **Report delivery & settle** form
+   prefilled with a suggested, editable meter reading (85%–105% of what was
+   agreed) — this is the seller's real smart-meter reading after physical
+   delivery, which real settlement always pays on. Submitting sends a real
+   `on_status` using whatever quantity was actually agreed (the counter
+   terms, if there was one). Both dashboards flip to **Settled**, live,
+   with the real computed ₹ amount.
+7. **The rejected path**: on the buyer's form, set "Trade as" to
+   **Blocked discom** before bidding. The real `contractpolicyenforcer`
+   step on `onix-sellerapp` NACKs it live, with the real, specific,
+   human-readable policy violation message — not a canned error.
+8. **Full protocol trace**: any trade row's **Show trace** toggle expands
+   every real Beckn hop logged for that transaction (`init`, `on_init`,
+   `confirm`, `on_confirm`, `on_status`, plus any decline) with its
+   direction, timestamp, and the actual raw payload sent or received —
+   nothing simulated, each row is written at the moment the real
+   send/receive happened.
+9. **Filters**: the buyer's discovered-offers list has live price/quantity
+   range filters, a sort dropdown, and an "only buyable" toggle — purely
+   client-side narrowing of what `/api/offers` already returns.
+
+## Honesty notes (read before demoing)
+
+- **Discover is best-effort.** The real shared discovery service
+  (`34.93.165.42.sslip.io`) is a different real backend than the one
+  `catalog/publish` hits (`fabric.nfh.global`) — a quirk already flagged
+  in Grid Pulse. In testing, a `discover` call gets accepted by onix but
+  no `catalog` callback reliably arrives. "Buy directly" (typing the offer
+  id) is the reliable path — this mirrors how the original scripted demo
+  worked too (`discover` and the trade steps were always independent
+  workflows, never actually chained).
+- **Settlement math is computed twice, deliberately.** The real
+  `contractpolicyenforcer` plugin on `onix-sellerapp` independently
+  evaluates the linked `.rego` policy against whatever `on_status` payload
+  it receives. This app also computes the same `FINAL_ALLOC × PRICE_PER_KWH`
+  formula itself, purely so the seller's own UI has an amount to display
+  immediately (the real settlement flow has no callback *to* the seller
+  after it sends `on_status` — there'd be nothing to display otherwise).
+  Both use the identical, already-verified formula.
+- **Two real bugs were caught by the real system while building this**,
+  not invented for effect: an `init` message needs `AVAILABLE_QTY`
+  declared in `payloadDescriptors`, and `SettlementTerm`'s real schema
+  lives at `.../SettlementTerm/v2.0/attributes.yaml` — the devkit's own
+  example fixture omits the `v`. Both are fixed in `beckn.js` on each
+  side.
+
+## Resetting between demo runs
+
+Stop both `npm start` processes, then delete the SQLite files:
 ```bash
-cd ~/Desktop/p2p-trading-demo/seller-app
-npm install
+rm seller-app/seller-app.db* buyer-app/buyer-app.db*
 ```
-This downloads the small number of libraries the app needs — takes under
-a minute. You'll see a line like `added 69 packages` when it's done.
-
-Now start it:
-```bash
-npm start
-```
-You should see:
-```
-(node:12345) ExperimentalWarning: SQLite is an experimental feature and might change at any time
-Seller Platform listening on http://localhost:4002
-  → talking to onix-sellerapp at http://localhost:8082
-  → webhook target for onix: http://host.docker.internal:4002/api/webhook
-```
-**The `ExperimentalWarning` line is expected and harmless** — it's
-Node's own built-in database feature (`node:sqlite`) announcing itself,
-deliberately used here instead of a third-party database package so
-`npm install` never needs anything beyond your configured npm registry
-(see "On a corporate laptop" below for why that matters). **This command
-does not finish or return you to the prompt — that's
-correct.** It means the server is running and waiting. **Leave this
-terminal window open** for the rest of the demo. Do not close it, and do
-not press Ctrl+C in it (that would stop the server).
-
----
-
-## Step 5 — Install and start the Buyer Platform
-
-**Open a second, brand-new terminal window** (do not reuse the one from
-Step 4 — it's busy running the seller server). In the new window:
-```bash
-cd ~/Desktop/p2p-trading-demo/buyer-app
-npm install
-npm start
-```
-You should see:
-```
-Buyer Platform listening on http://localhost:4001
-  → talking to onix-buyerapp at http://localhost:8081
-  → webhook target for onix: http://host.docker.internal:4001/api/bap-webhook
-```
-Same as before — leave this window open too.
-
-You should now have **two terminal windows open, both quietly running**
-(neither shows a prompt to type into), plus the Docker containers from
-Step 3 running in the background. That's the whole system, fully up.
-
----
-
-## Step 6 — Open the two dashboards
-
-In your web browser, open these two pages, ideally in two separate
-windows side by side:
-
-- **Seller Platform:** http://localhost:4002
-- **Buyer Platform:** http://localhost:4001
-
-Each should show a small "● live" indicator near the top — that's a
-WebSocket connection back to its own server, confirming everything's
-wired up.
-
----
-
-## Step 7 — Run the actual demo
-
-1. **On the Seller page:** type a quantity and price (or use the
-   defaults), click **Publish offer**. A toast confirms it — this really
-   just called `catalog/publish` on the real network.
-2. Note the offer ID that appears under "Active & settled trades" section
-   header... actually it's easiest to copy it from the **Incoming
-   requests** area once a request lands, but for your *first* purchase
-   you'll need it from the publish confirmation. The easiest way: open
-   `http://localhost:4002/api/offers` in a new browser tab — it shows the
-   raw offer list including the `id` field, e.g. `offer-demo-a1b2c3d4`.
-3. **On the Buyer page:** paste that offer ID into the "Buy directly"
-   form. It live-resolves the ID against the Seller Platform's own real
-   catalog — price fills in automatically and can't be edited (it's the
-   seller's own published figure, not yours to set), and the quantity
-   field is capped to what's actually available. Adjust quantity down if
-   you want (or leave it at the max), leave "Trade as" on **Allowed
-   discom**, click **Buy**. This sends a real, signed `init` — and the
-   same real check runs server-side too, so a made-up offer ID, a
-   too-large quantity, or a tampered price are all rejected before
-   anything is sent, not just blocked in the browser.
-4. **Back on the Seller page:** within a second or two, the request
-   appears live under "Incoming requests." Click **Accept**.
-5. Watch both pages — with no further clicks, the trade flips to
-   **Active** on both sides within a couple of seconds (the two servers
-   are automatically exchanging the rest of the protocol handshake for
-   you).
-6. **On the Seller page:** click **Mark as delivered** on the now-active
-   trade. Both pages flip to **Settled**, showing a real computed ₹
-   amount (delivered kWh × price — the exact delivered amount is
-   randomized slightly, mimicking a real meter reading that never
-   perfectly matches what was requested).
-7. **The rejected-trade demo** (the most convincing part to show a
-   skeptical audience): publish a fresh offer, then on the Buyer page set
-   "Trade as" to **Blocked discom (watch it get rejected)** before
-   clicking Buy. You'll see a real, live rejection with a specific,
-   human-readable reason — the same real policy engine genuinely refusing
-   this one, not a canned error message.
-
----
-
-## Stopping everything / running it again later
-
-To stop: press Ctrl+C in each of the two `npm start` terminal windows,
-then:
-```bash
-cd ~/Desktop/p2p-trading-demo/network/devkits/p2p-trading-ies-wave2/install
-docker compose down
-```
-
-To run again later, repeat from Step 3 onward (Docker images are already
-downloaded, so it'll be fast this time; `npm install` doesn't need to be
-re-run unless you deleted the `node_modules` folders).
-
-## Resetting to a fresh, empty state
-
-**Restarting the apps (`npm start` again) does not clear anything** —
-each platform's offers/trades live in a real database file
-(`seller-app/seller-app.db`, `buyer-app/buyer-app.db`), which restarting
-the process, or clearing your terminal, has zero effect on. That file is
-the entire point of using a real database instead of an in-memory array:
-it survives a restart the same way a real system's data would.
-
-**The easy way**: each dashboard has its own **Reset demo** button (top
-right) — click it, confirm, and that platform's offers and trades are
-wiped instantly, live, with no need to touch a terminal at all. The two
-platforms are reset independently (by design — see
-`p2p-trading-app/ARCHITECTURE.md` §2, no shared state between them ever)
-— click it on both if you want a fully clean pair.
-
-**The manual way** (equivalent, useful if the apps aren't running):
-```bash
-cd ~/Desktop/p2p-trading-demo
-rm -f seller-app/seller-app.db* buyer-app/buyer-app.db*
-```
-Do this while both `npm start` processes are stopped, then start them
-again.
-
-**To review history before deciding to clear it**: both dashboards
-already show their own live, running list of every offer/trade — that's
-the same data the Reset button would wipe. For a closer look at the raw
-underlying records (including ones no longer shown in an "active" list,
-like old settled or rejected trades), open `http://localhost:4002/api/trades`
-(seller) or `http://localhost:4001/api/trades` (buyer) in a browser tab —
-plain JSON, nothing to install.
-
----
-
-## Optional: the Network Dashboard, and proving this is really a shared network
-
-Open **http://localhost:4001/network.html** (a link also sits in the
-Buyer Platform's header) for a live, auto-refreshing view of:
-
-- **Every offer discoverable on the shared network**, from every real
-  participant currently testing on it — not just this app's own two
-  sides — with your own highlighted.
-- **This app's own trades, independently verified on the real external
-  DEG ledger** (`ies-p2p-energy-ledger.beckn.io`) — queried live with a
-  real Ed25519-signed request, entirely separate from this app's own
-  local database. Each row carries a real `rowDigest` hash the ledger
-  itself computed, so you can prove a completed trade genuinely landed
-  somewhere outside these two apps, not just inside a local SQLite file.
-
-**Two things worth understanding about what you'll actually see there:**
-
-1. **`discover`'s real results only ever reach you if `onix-buyerapp` is
-   itself reachable from the public internet.** The shared discovery
-   service delivers its answer *asynchronously*, to whatever `bapUri`
-   your discover request carries — and by default that's
-   `buyerapp.example.com`, an address that only resolves inside your own
-   local Docker network. On a plain local run (just following Steps 3-6
-   above), clicking "Refresh offers" will send the request fine, but
-   nothing will come back. This isn't a bug to fix by retrying — it's
-   inherent to how a real async callback has to work. To actually receive
-   results, expose `onix-buyerapp` (port 8081) via a tunnel (e.g.
-   [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/),
-   free, no signup: `cloudflared tunnel --url http://localhost:8081`) and
-   set the resulting public URL, either as a `PUBLIC_BAP_URI` environment
-   variable or written to a `buyer-app/public-bap-uri.txt` file (one line,
-   the tunnel's base URL — this file is gitignored on purpose, since the
-   URL is different every time you start a new tunnel), before starting
-   the Buyer Platform. Buying and publishing both work over plain
-   `localhost` regardless — only the async discover results need this.
-2. **The ledger panel only ever shows trades *this platform* was a party
-   to** — not because it's blocked from seeing more, but because the real
-   ledger genuinely only records what you tell it (via each trade's own
-   `participants[].ledgerUri`, in `seller-app/beckn.js`'s
-   `pointSellerDiscomAtRealLedger`). It's a real, independent proof of
-   *your own* trades, not a browser for everyone else's.
-
----
-
-## Troubleshooting
-
-**"no such file or directory" / "cannot find path"**
-You're in the wrong folder. Run `pwd` to see where you are, then `cd` back
-to the expected folder shown at the top of each step (all paths are
-relative to `~/Desktop/p2p-trading-demo`, the folder created in Step 2).
-
-**A tiny black window flashed open and instantly closed**
-This happens if a `.sh` file gets double-clicked instead of run from an
-already-open terminal. Nothing in this guide should be double-clicked —
-if you did that by accident, just ignore it and continue by typing the
-equivalent command from this guide into your terminal instead.
-
-**`docker compose up -d` fails with "Cannot connect to the Docker
-daemon"**
-Docker Desktop isn't running. Open the Docker Desktop application and
-wait for it to fully start (see Step 1c), then retry.
-
-**`docker compose ps` shows a container as `Exited` or missing**
-Run `docker compose logs <container-name>` (e.g. `docker compose logs
-onix-sellerapp`) to see why. The most common cause is trying to start it
-a second time while an old copy is still half-running — run
-`docker compose down` then `docker compose up -d` again.
-
-**A port is "already in use" / "address already in use"**
-Something is already using one of the ports this project needs (4001,
-4002, 8081-8086, or 9000). Usually this means a previous run wasn't fully
-stopped. Stop both `npm start` terminals (Ctrl+C) and run
-`docker compose down` from Step 3's folder, then start again from Step 3.
-
-**`npm start` prints an error immediately and returns to the prompt**
-The server crashed on startup — read the error message above the prompt.
-The most common cause is Step 3 not being done yet (the app can't reach
-the network) — make sure `docker compose ps` shows all 14 containers
-`Up` before starting the apps.
-
-**A "Buy" or "Publish" click shows a rejected/error toast you didn't
-expect**
-Read the message in the toast — it's the real network's real answer, not
-a bug message. If it mentions a policy violation, that's the intended
-"rejected trade" behavior from Step 7 §7 firing on the wrong persona; if
-it's something else, check both terminal windows from Steps 4-5 for a
-red error line and see what it says.
-
-**On a corporate/managed laptop, `npm install` fails with something
-mentioning `ENOTFOUND github.com` or `ENOTFOUND nodejs.org`**
-This app is deliberately built to avoid needing this — if you see it,
-you're most likely running an older copy of this repo (or a fork with
-extra dependencies). This exact version only ever needs packages from
-your organization's configured npm registry (check yours with
-`npm config get registry`) — it doesn't reach out to GitHub or nodejs.org
-at all. If you still hit this, confirm you're on the latest version of
-this repo (`git pull`), and check that `package.json` in both `seller-app`
-and `buyer-app` does **not** list `better-sqlite3` as a dependency — if it
-does, you have a stale copy.
-
-**Nothing above matches what you're seeing**
-Copy the exact text from your terminal (both the command you ran and
-everything printed after it) — that's the most useful thing to share when
-asking for help.
-
----
-
-## For the curious: what's actually real here
-
-- Read `p2p-trading-app/DEMO-APP-PLAN.md`-equivalent design notes are
-  folded into `seller-app/beckn.js` and `buyer-app/beckn.js` as comments —
-  every payload field shape is copied from the upstream devkit's own
-  verified example fixtures, not invented.
-- The two `.rego`-based policy checks (which discom is allowed to trade,
-  and the settlement math) are fetched live from a real registry
-  (`api.dedi.global`) at the moment each message is processed — they are
-  not hardcoded anywhere in this repo.
-- `network/` in this repo is a trimmed-down copy of the upstream
-  [`beckn/DEG`](https://github.com/beckn/DEG) `p2p-trading-ies-wave2`
-  devkit — only the pieces needed to run (no test-runner scripts, no
-  Python, no `sparse-checkout`) so there is nothing else to install beyond
-  the three prerequisites in Step 1.
+Restart — both dashboards come up empty.
