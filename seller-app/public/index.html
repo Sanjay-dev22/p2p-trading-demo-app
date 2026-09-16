@@ -163,11 +163,12 @@ async function refreshAll(force) {
     fetch("/api/earnings").then((r) => r.json()),
   ]);
   renderOffers(offers);
+  const offersById = Object.fromEntries(offers.map((o) => [o.id, o]));
   const requests = trades.filter((t) => t.status === "PENDING_ACCEPT");
   const settledOrActive = trades.filter((t) => t.status !== "PENDING_ACCEPT");
-  const reqJson = JSON.stringify(requests) + [...openTimelines].join(",");
+  const reqJson = JSON.stringify(requests) + JSON.stringify(offers) + [...openTimelines].join(",");
   const tradeJson = JSON.stringify(settledOrActive) + [...openTimelines].join(",");
-  if (force || reqJson !== lastRequestsJson) { lastRequestsJson = reqJson; await renderRequests(requests); }
+  if (force || reqJson !== lastRequestsJson) { lastRequestsJson = reqJson; await renderRequests(requests, offersById); }
   if (force || tradeJson !== lastTradesJson) { lastTradesJson = tradeJson; await renderTrades(settledOrActive); }
   $("#earnings").textContent = "₹" + Number(earnings.total).toFixed(2);
 }
@@ -175,14 +176,18 @@ async function refreshAll(force) {
 function renderOffers(list) {
   const el = $("#offers");
   if (!list.length) { el.innerHTML = '<div class="empty">Nothing published yet.</div>'; return; }
-  el.innerHTML = list.map((o) => `
+  el.innerHTML = list.map((o) => {
+    const remaining = o.remaining_qty ?? o.quantity_kwh;
+    const soldOut = remaining <= 0;
+    return `
     <div class="row">
       <div class="meta">
         <div class="primary" style="font-family:monospace">${o.id}</div>
-        <div class="secondary">${o.quantity_kwh} kWh @ ₹${o.price_per_kwh}/kWh</div>
+        <div class="secondary">${remaining} / ${o.quantity_kwh} kWh remaining @ ₹${o.price_per_kwh}/kWh${soldOut ? ' <span class="badge declined">Sold out</span>' : ""}</div>
       </div>
       <button class="secondary" onclick="copyOfferId('${o.id}', this)">Copy ID</button>
-    </div>`).join("");
+    </div>`;
+  }).join("");
 }
 
 function copyOfferId(id, btn) {
@@ -194,12 +199,20 @@ function copyOfferId(id, btn) {
   }
 }
 
-async function renderRequests(list) {
+async function renderRequests(list, offersById) {
   const el = $("#requests");
   if (!list.length) { el.innerHTML = '<div class="empty">No incoming requests yet.</div>'; return; }
   const blocks = await Promise.all(list.map(async (t) => {
     const askLine = t.askingPricePerKwh != null && t.askingPricePerKwh !== t.pricePerKwh
       ? ` <span style="color:var(--muted)">(our ask: ₹${t.askingPricePerKwh}/kWh)</span>`
+      : "";
+    const offer = offersById[t.offerId];
+    const remaining = offer ? (offer.remaining_qty ?? offer.quantity_kwh) : null;
+    const notEnough = remaining != null && t.requestedQty > remaining;
+    // Only worth mentioning once capacity has actually moved from the
+    // original published figure — otherwise it's just restating the bid.
+    const capacityLine = remaining != null && (notEnough || remaining < offer.quantity_kwh)
+      ? ` <span style="color:${notEnough ? "var(--red)" : "var(--muted)"}">(${remaining} kWh actually remains on this offer${notEnough ? " — not enough for the full bid" : ""})</span>`
       : "";
     const timelineHtml = await renderTimelineHtml(t.transactionId);
     return `
@@ -207,7 +220,7 @@ async function renderRequests(list) {
       <div class="top">
         <div class="meta">
           <div class="primary">Buyer bids ₹${t.pricePerKwh}/kWh for ${t.requestedQty} kWh${askLine}</div>
-          <div class="secondary">from ${t.bapId} · discom: ${t.buyerDiscom}</div>
+          <div class="secondary">from ${t.bapId} · discom: ${t.buyerDiscom}${capacityLine}</div>
         </div>
         <div style="display:flex;align-items:center;gap:10px">
           ${badge(t.status)}
@@ -215,10 +228,10 @@ async function renderRequests(list) {
         </div>
       </div>
       <div class="decision-form">
-        <button onclick="respond('${t.transactionId}','accept')">Accept bid</button>
+        <button onclick="respond('${t.transactionId}','accept')" ${notEnough ? "disabled title=\"Not enough remaining capacity — counter with a lower quantity instead\"" : ""}>Accept bid</button>
         <span class="lbl">or counter:</span>
         <input type="number" step="0.1" placeholder="₹/kWh" id="cp-${t.transactionId}" value="${t.askingPricePerKwh || t.pricePerKwh}">
-        <input type="number" step="0.1" placeholder="kWh" id="cq-${t.transactionId}" value="${t.requestedQty}">
+        <input type="number" step="0.1" placeholder="kWh" id="cq-${t.transactionId}" value="${notEnough ? remaining : t.requestedQty}" ${remaining != null ? `max="${remaining}"` : ""}>
         <button class="amber" onclick="counter('${t.transactionId}')">Send counter-offer</button>
         <button class="secondary" style="background:transparent;color:var(--red);border-color:var(--red)" onclick="decline('${t.transactionId}')">Decline</button>
       </div>

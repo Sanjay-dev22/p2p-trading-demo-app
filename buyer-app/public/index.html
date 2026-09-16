@@ -107,9 +107,9 @@
     <div class="list" id="offers"><div class="empty">No offers discovered yet.</div></div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="buyPanel">
     <h2>Buy directly / place a bid</h2>
-    <div class="hint">If the offer you want isn't listed above yet, paste its real Offer ID here — copy it from the "My published offers" list on the <strong>Seller Platform</strong> page (it looks like <code>offer-demo-xxxxxxxx</code>, not a made-up value). The price field is a real negotiating bid: leave it at the seller's ask to buy outright, or lower it to test a real counter-offer — the seller can accept, counter back, or decline.</div>
+    <div class="hint">Paste an Offer ID here — copy it from a card above with the <strong>Copy ID</strong> button, or from the "My published offers" list on the <strong>Seller Platform</strong> page (it looks like <code>offer-demo-xxxxxxxx</code>). The price field is a real negotiating bid: leave it at the seller's ask to buy outright, or lower it to test a real counter-offer — the seller can accept, counter back, or decline.</div>
     <form id="buyForm">
       <div class="field"><label>Offer ID</label><input type="text" name="offerId" id="offerIdInput" placeholder="offer-demo-xxxxxxxx" required autocomplete="off"></div>
       <div class="field"><label>Quantity (kWh)</label><input type="number" step="0.1" name="quantityKwh" id="qtyInput" value="" placeholder="—" required disabled></div>
@@ -263,18 +263,46 @@ function renderOffers(list) {
   }
   el.innerHTML = list.map((o) => {
     const isOwn = myOfferIds.has(o.offer_id);
+    // The offer's descriptor name is always the same generic string
+    // ("Demo Solar Offer") every seller publishes — showing only that
+    // literally hides the one thing you need to actually act on this
+    // offer (its ID), so the ID is always shown too, with its own copy
+    // button, regardless of whether a name is also present.
     const action = isOwn
-      ? `<button onclick="buyFromCard('${o.offer_id}', ${o.available_qty}, ${o.price_per_kwh})">Buy at ask</button>`
+      ? `<button onclick="buyFromCard('${o.offer_id}')">Buy at ask</button>
+         <button class="secondary" onclick="bidOnCard('${o.offer_id}')">Place a bid</button>`
       : `<span class="tag" title="Not currently live on our own Seller Platform's real catalog — either a different real network participant's offer (this demo has no live routing endpoint for their platform), or one of our own past offers that's no longer live">view only</span>`;
     return `
     <div class="row">
       <div class="meta">
-        <div class="primary">${o.name || o.offer_id}${isOwn ? ' <span class="tag" style="color:var(--accent)">ours, live now</span>' : ""}</div>
+        <div class="primary">${o.name ? o.name + " — " : ""}<span style="font-family:monospace">${o.offer_id}</span>${isOwn ? ' <span class="tag" style="color:var(--accent)">ours, live now</span>' : ""}</div>
         <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · discovered ${timeAgo(o.discovered_at)}</div>
       </div>
-      ${action}
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="secondary" onclick="copyOfferId('${o.offer_id}', this)">Copy ID</button>
+        ${action}
+      </div>
     </div>`;
   }).join("");
+}
+
+function copyOfferId(id, btn) {
+  const done = () => { const t = btn.textContent; btn.textContent = "Copied!"; setTimeout(() => (btn.textContent = t), 1200); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(id).then(done).catch(() => toast("Couldn't copy — offer ID: " + id));
+  } else {
+    toast("Copy not available in this browser — offer ID: " + id);
+  }
+}
+
+// Fills the manual bid form with this card's offer ID and scrolls to it —
+// this is the actual negotiation entry point (editable quantity + price);
+// the card itself is a display, not a second parallel "buy" implementation.
+function bidOnCard(offerId) {
+  offerIdInput.value = offerId;
+  resolveOfferId();
+  $("#buyPanel").scrollIntoView({ behavior: "smooth", block: "start" });
+  offerIdInput.focus();
 }
 
 async function renderTrades(list) {
@@ -338,8 +366,17 @@ async function buy(offerId, quantityKwh, bidPricePerKwh, buyerDiscomId) {
   refreshAll();
 }
 
-function buyFromCard(offerId, quantityKwh, pricePerKwh) {
-  buy(offerId, quantityKwh, pricePerKwh, "allowed");
+// "Buy at ask" takes the whole current offer at the seller's current live
+// price — deliberately re-resolved here rather than trusting the
+// discovered_offers row's cached price/qty (which can be stale: the
+// discover cache only ever reflects what the network returned at some
+// past discover, not necessarily what's actually still on offer right
+// now). No bid override is sent, so the server's own live ask decides
+// the price — never a number carried from the client.
+async function buyFromCard(offerId) {
+  const r = await fetch(`/api/resolve-offer/${encodeURIComponent(offerId)}`).then((res) => res.json());
+  if (!r.found || !r.buyable) { toast("Can't buy this offer right now: " + (r.reason || "not currently live"), true); refreshAll(); return; }
+  buy(offerId, r.availableQty, undefined, "allowed");
 }
 
 // ---------- "Buy directly" (paste an Offer ID): live-resolve it against

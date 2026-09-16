@@ -57,8 +57,17 @@ for (const stmt of [
   "ALTER TABLE trades ADD COLUMN counter_price_per_kwh REAL",
   "ALTER TABLE trades ADD COLUMN counter_qty REAL",
   "ALTER TABLE trades ADD COLUMN decline_reason TEXT",
+  // Real capacity tracking — an offer's advertised quantity previously
+  // never depleted as trades were accepted, so the same offer could be
+  // sold to any number of buyers with no check at all. remaining_qty is
+  // the actual sellable balance; quantity_kwh stays as the original
+  // published figure for reference/history.
+  "ALTER TABLE offers ADD COLUMN remaining_qty REAL",
 ]) {
   try { db.exec(stmt); } catch (_) { /* column already exists */ }
 }
+// Backfill: any row from before this column existed (or any row where it
+// was never set) starts fully available, same as a brand-new publish.
+db.exec("UPDATE offers SET remaining_qty = quantity_kwh WHERE remaining_qty IS NULL");
 
 module.exports = db;

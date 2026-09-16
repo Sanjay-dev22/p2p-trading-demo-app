@@ -126,7 +126,14 @@ async function resolveOffer(offerId) {
     const sellerOffers = await fetch(`${SELLER_APP_URL}/api/offers`).then((r) => (r.ok ? r.json() : []));
     const own = sellerOffers.find((o) => o.id === offerId);
     if (own) {
-      return { found: true, buyable: true, sellerId: beckn.SELLER_ID, offerId, pricePerKwh: own.price_per_kwh, availableQty: own.quantity_kwh };
+      // remaining_qty is the real sellable balance — quantity_kwh is only
+      // the amount originally published and never reflects what's already
+      // been sold. A fully depleted offer is found, but not buyable.
+      const remaining = own.remaining_qty ?? own.quantity_kwh;
+      if (remaining <= 0) {
+        return { found: true, buyable: false, sellerId: beckn.SELLER_ID, offerId, pricePerKwh: own.price_per_kwh, availableQty: 0, reason: "This offer is fully sold — no capacity remains." };
+      }
+      return { found: true, buyable: true, sellerId: beckn.SELLER_ID, offerId, pricePerKwh: own.price_per_kwh, availableQty: remaining };
     }
   } catch (err) {
     console.error("resolveOffer: could not reach Seller Platform at", SELLER_APP_URL, "—", err.message || err);

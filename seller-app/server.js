@@ -84,6 +84,14 @@ app.post("/api/notify/:transactionId", (req, res) => {
   const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId);
   if (!row) return res.status(404).json({ error: "trade not found" });
   if (event === "counter_declined") {
+    // The counter-offer already reserved real capacity against this offer
+    // (see /api/respond) — since the trade is dead now, that reservation
+    // must be given back, or it's lost forever and the offer quietly
+    // shrinks every time a counter gets turned down.
+    const releasedQty = row.counter_qty || row.requested_qty;
+    if (releasedQty) {
+      db.prepare("UPDATE offers SET remaining_qty = remaining_qty + ? WHERE id=?").run(releasedQty, row.offer_id);
+    }
     const now = beckn.nowIso();
     db.prepare("UPDATE trades SET status=?, decline_reason=?, updated_at=? WHERE transaction_id=?").run("DECLINED", reason || "Buyer declined the counter-offer", now, transactionId);
     logEvent(transactionId, "decline", "received", `Buyer declined our counter-offer${reason ? `: ${reason}` : ""}`);
@@ -146,9 +154,9 @@ app.post("/api/publish", async (req, res) => {
     }
 
     const publishedAt = beckn.nowIso();
-    db.prepare("INSERT INTO offers (id, quantity_kwh, price_per_kwh, published_at) VALUES (?,?,?,?)").run(offerId, quantityKwh, pricePerKwh, publishedAt);
+    db.prepare("INSERT INTO offers (id, quantity_kwh, remaining_qty, price_per_kwh, published_at) VALUES (?,?,?,?,?)").run(offerId, quantityKwh, quantityKwh, pricePerKwh, publishedAt);
 
-    const offer = { id: offerId, quantity_kwh: quantityKwh, price_per_kwh: pricePerKwh, published_at: publishedAt };
+    const offer = { id: offerId, quantity_kwh: quantityKwh, remaining_qty: quantityKwh, price_per_kwh: pricePerKwh, published_at: publishedAt };
     broadcast("offer_published", offer);
     res.json({ ok: true, offer });
   } catch (err) {
@@ -270,11 +278,26 @@ app.post("/api/respond/:transactionId", async (req, res) => {
       return res.status(400).json({ error: "a counter-offer needs a positive pricePerKwh and quantityKwh" });
     }
 
+    // Real capacity check — accepting or countering commits real kWh
+    // against this offer's actual remaining balance. Without this, the
+    // same offer could be sold to any number of buyers with no limit at
+    // all (the bug this replaces: quantity_kwh was write-once, checked
+    // nowhere). Skipped only if the offer itself can't be found (a
+    // malformed/legacy trade with no real offer row to check against).
+    const agreedQty = counter ? counter.quantityKwh : row.requested_qty;
+    const offerRow = db.prepare("SELECT * FROM offers WHERE id=?").get(row.offer_id);
+    if (offerRow && agreedQty > offerRow.remaining_qty) {
+      return res.status(409).json({ error: `Only ${offerRow.remaining_qty} kWh remains available on this offer — cannot ${decision === "counter" ? "counter for" : "accept"} ${agreedQty} kWh.` });
+    }
+
     const stored = JSON.parse(row.raw_context);
     const onInit = beckn.buildOnInit(stored.context, stored.message.contract, counter);
     const result = await beckn.postToOnix("/bpp/caller/on_init", onInit);
     if (!result.ok) { console.error("on_init rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: "onix rejected on_init", detail: result.json, raw: result.text }); }
 
+    if (offerRow) {
+      db.prepare("UPDATE offers SET remaining_qty = remaining_qty - ? WHERE id=?").run(agreedQty, row.offer_id);
+    }
     const now = beckn.nowIso();
     db.prepare("UPDATE trades SET status=?, counter_price_per_kwh=?, counter_qty=?, raw_context=?, updated_at=? WHERE transaction_id=?").run(
       "AWAITING_CONFIRM",
