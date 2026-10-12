@@ -12,7 +12,13 @@ const SELF_URI = "http://sellerapp.example.com:9000/bpp/receiver";
 const SELF_METER_ID = "TEST_METER_SELLER_001";
 const SELF_CUST_ID = "TEST_CUST_SELLER_001";
 const SELLER_DISCOM_ID = "TEST_DISCOM_SELLER";
-const POLICY_URL = "https://api.dedi.global/dedi/lookup/indiaenergystack.in/ies-rulesets/p2p-trading-ies-contractpolicy-common";
+// LOCAL DEMO AMENDMENT: points at this machine's own locally-amended policy
+// (Gap 1 real penalty rate, Gap 4 price-sanity band, Gap 12 FIRM/BEST_EFFORT)
+// instead of the real production DeDi record, so these fixes are actually
+// enforced by the real contractpolicyenforcer against real trades. Revert to
+// the commented-out real URL to go back to the unmodified upstream policy.
+// const POLICY_URL = "https://api.dedi.global/dedi/lookup/indiaenergystack.in/ies-rulesets/p2p-trading-ies-contractpolicy-common";
+const POLICY_URL = "http://host.docker.internal:8099/p2p-trading-ies-wave2-contractpolicy-local-amended.rego";
 const POLICY_QUERY_PATH = "data.deg.contracts.p2p_trading";
 
 // The real external DEG ledger — where the *old* scripted demo's trades

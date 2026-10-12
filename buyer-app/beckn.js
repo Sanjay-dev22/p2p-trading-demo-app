@@ -12,7 +12,9 @@ const SELF_CUST_ID = "TEST_CUST_BUYER_001";
 const SELLER_ID = "sellerapp.example.com"; // the only seller in this demo — we run both sides
 const SELLER_URI = "http://sellerapp.example.com:9000/bpp/receiver";
 const SELLER_DISCOM_ID = "TEST_DISCOM_SELLER";
-const POLICY_URL = "https://api.dedi.global/dedi/lookup/indiaenergystack.in/ies-rulesets/p2p-trading-ies-contractpolicy-common";
+// LOCAL DEMO AMENDMENT — see seller-app/beckn.js for the full explanation.
+// const POLICY_URL = "https://api.dedi.global/dedi/lookup/indiaenergystack.in/ies-rulesets/p2p-trading-ies-contractpolicy-common";
+const POLICY_URL = "http://host.docker.internal:8099/p2p-trading-ies-wave2-contractpolicy-local-amended.rego";
 const POLICY_QUERY_PATH = "data.deg.contracts.p2p_trading";
 
 // The two personas selectable in the buyer UI — one real, allowed discom
