@@ -18,6 +18,36 @@ const PORT = process.env.PORT || 4002;
 // with, not a departure from, the existing architecture.
 const BUYER_APP_URL = process.env.BUYER_APP_URL || "http://localhost:4001";
 
+// Mirrors the REAL enforced seller-discom policy
+// (p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/policies/
+// p2p-trading-ies-wave2-contractpolicy-local-amended.rego) so this
+// dashboard displays the number the network will actually settle, not a
+// naive price × quantity guess. Keep these three constants in sync with
+// that file by hand — this app has no way to read rego directly, and the
+// real settlement result never comes back to the seller synchronously
+// (confirmed live: onix's response to /bpp/caller/on_status is a bare ACK;
+// the real computed numbers only ever appear in the message forwarded on
+// to the buyer, which is why this bug — showing an un-penalized amount —
+// was invisible until the penalty rate stopped being zero).
+const PENALTY_RATE_PER_KWH = 2.5;
+const WHEELING_CHARGE_SELLER_PER_KWH = 0.5;
+const WHEELING_CHARGE_BUYER_PER_KWH = 0.5;
+const round2 = (x) => Math.round(x * 100) / 100;
+
+// Real settlement math, FIRM commitments only (this demo never declares
+// BEST_EFFORT, so every delivery here is FIRM — same default the policy
+// itself falls back to when commitmentType is absent).
+function computeSettlement({ requestedQty, finalAlloc, pricePerKwh }) {
+  const shortfallKwh = Math.max(0, requestedQty - finalAlloc);
+  const tradeValue = round2(finalAlloc * pricePerKwh);
+  const wheelingSeller = round2(WHEELING_CHARGE_SELLER_PER_KWH * finalAlloc);
+  const wheelingBuyer = round2(WHEELING_CHARGE_BUYER_PER_KWH * finalAlloc);
+  const penalty = round2(PENALTY_RATE_PER_KWH * shortfallKwh);
+  const sellerReceivable = round2(tradeValue - wheelingSeller - penalty);
+  const buyerPayable = round2(tradeValue + wheelingBuyer);
+  return { shortfallKwh, tradeValue, wheelingSeller, wheelingBuyer, penalty, sellerReceivable, buyerPayable };
+}
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -350,14 +380,22 @@ app.post("/api/deliver/:transactionId", async (req, res) => {
 
   try {
     const stored = JSON.parse(row.raw_context);
-    // The agreed price is the counter-offer's price when this trade went
+    // The agreed price/quantity are the counter-offer's when this trade went
     // through one (the buyer's original bid was superseded the moment they
-    // accepted the counter) — otherwise it's the buyer's bid, unchanged.
+    // accepted the counter) — otherwise they're the buyer's own bid, unchanged.
     const pricePerKwh = row.counter_price_per_kwh || row.price_per_kwh;
-    const settlementAmount = Math.round(finalAlloc * pricePerKwh * 100) / 100;
+    const requestedQty = row.counter_qty || row.requested_qty;
+    // Real settlement math (price minus wheeling minus any shortfall
+    // penalty), not naive price × delivered — see computeSettlement's own
+    // comment for why this duplicates the real policy's formula instead of
+    // reading the real result back from the network.
+    const { shortfallKwh, wheelingSeller, penalty, sellerReceivable } = computeSettlement({ requestedQty, finalAlloc, pricePerKwh });
+    const settlementAmount = sellerReceivable;
     const txnRef = `TXN-${transactionId.slice(0, 8).toUpperCase()}-SETTLED`;
 
-    const onStatus = beckn.buildOnStatusSettled(stored.context, stored.message.contract, { finalAlloc, pricePerKwh, settlementAmount, txnRef });
+    const onStatus = beckn.buildOnStatusSettled(stored.context, stored.message.contract, {
+      finalAlloc, pricePerKwh, requestedQty, settlementAmount, shortfallKwh, wheelingSeller, penalty, txnRef,
+    });
     const result = await beckn.postToOnix("/bpp/caller/on_status", onStatus);
     if (!result.ok) { console.error("on_status rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: "onix rejected on_status", detail: result.json, raw: result.text }); }
 

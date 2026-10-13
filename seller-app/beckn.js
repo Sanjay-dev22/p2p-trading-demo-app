@@ -257,7 +257,7 @@ function buildOnConfirm(originalCtx, originalContract) {
 // consideration/revenueFlows and the final settlement/payment records are
 // added. settlementAmount is computed by the caller (finalAlloc × price)
 // using the same formula the real linked .rego policy evaluates.
-function buildOnStatusSettled(originalCtx, originalContract, { finalAlloc, pricePerKwh, settlementAmount, txnRef }) {
+function buildOnStatusSettled(originalCtx, originalContract, { finalAlloc, pricePerKwh, requestedQty, settlementAmount, shortfallKwh, wheelingSeller, penalty, txnRef }) {
   const contract = JSON.parse(JSON.stringify(originalContract));
   // Same idempotent override as buildOnInit/buildOnConfirm — the real
   // ledger cascade plugin may read participants fresh off each message
@@ -276,6 +276,17 @@ function buildOnStatusSettled(originalCtx, originalContract, { finalAlloc, price
     descriptors.push({ objectType: "REPORT_PAYLOAD_DESCRIPTOR", payloadType: "FINAL_ALLOC", units: "KWH", insertedBy: "sellerDiscom" });
   }
 
+  // Mirrors the real enforced policy's four-role split (energy, wheeling on
+  // both sides, shortfall penalty) instead of the old two-role "buyer pays
+  // exactly what seller receives" shape, which was only ever true while
+  // both wheeling rates and the penalty rate were zero. The real
+  // contractpolicyenforcer recomputes and overwrites this from the actual
+  // interval payloads as the message transits onix — this is what the app
+  // itself believes going in, kept consistent with that same real math so
+  // "Show trace" isn't misleading even before the network's own rewrite.
+  const tradeValue = Math.round(finalAlloc * pricePerKwh * 100) / 100;
+  const wheelingBuyer = Math.round(finalAlloc * 0.5 * 100) / 100; // WHEELING_CHARGE_BUYER_PER_KWH, kept in sync by hand — see server.js
+  const buyerPayable = Math.round((tradeValue + wheelingBuyer) * 100) / 100;
   contract.consideration = [
     {
       id: "auto-settlement-flows",
@@ -283,8 +294,20 @@ function buildOnStatusSettled(originalCtx, originalContract, { finalAlloc, price
         "@context": "https://schema.nfh.global/RevenueFlow/v2.0/context.jsonld",
         "@type": "RevenueFlow",
         revenueFlows: [
-          { role: "sellerPlatform", value: settlementAmount, currency: "INR", description: `Energy sale proceeds (${finalAlloc} kWh × ₹${pricePerKwh})` },
-          { role: "buyerPlatform", value: -settlementAmount, currency: "INR", description: `Energy purchase cost (${finalAlloc} kWh × ₹${pricePerKwh})` },
+          {
+            role: "sellerPlatform",
+            value: settlementAmount,
+            currency: "INR",
+            description: `Receives ${settlementAmount} INR = energy ${tradeValue} INR − seller-side wheeling 0.5 INR/kWh × ${finalAlloc} kWh = ${wheelingSeller} INR − delivery penalty 2.5 INR/kWh × ${shortfallKwh} kWh shortfall = ${penalty} INR`,
+          },
+          {
+            role: "buyerPlatform",
+            value: -buyerPayable,
+            currency: "INR",
+            description: `Pays ${buyerPayable} INR = energy ${tradeValue} INR + buyer-side wheeling 0.5 INR/kWh × ${finalAlloc} kWh = ${wheelingBuyer} INR`,
+          },
+          { role: "buyerDiscom", value: wheelingBuyer, currency: "INR", description: `Buyer-side wheeling charge = ${wheelingBuyer} INR` },
+          { role: "sellerDiscom", value: Math.round((wheelingSeller + penalty) * 100) / 100, currency: "INR", description: `Seller-side wheeling ${wheelingSeller} INR + delivery penalty ${penalty} INR` },
         ],
       },
     },
