@@ -50,6 +50,8 @@
   table.payout tfoot td { font-weight: 700; border-top: 2px solid var(--border); border-bottom: none; }
   .simplifications { font-size: 12px; color: var(--muted); line-height: 1.6; }
   .simplifications li { margin-bottom: 4px; }
+  .role-banner { background: rgba(192,127,42,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); margin: 0 0 20px; }
+  .role-banner b { color: var(--text); }
 </style>
 </head>
 <body>
@@ -58,6 +60,10 @@
   <span class="conn down" id="conn">connecting…</span>
 </header>
 <main>
+
+  <div class="role-banner">
+    <b>Your role:</b> the aggregator — a middleman between many small sellers and one bulk buyer. <b>Your job:</b> discover small sellers' offers, pool several into one bigger block, publish that block (from then on it behaves exactly like a normal seller offer to the rest of the network), and once it's bought and settled, split the real proceeds back to the small sellers you pooled. <b>Who talks to whom:</b> small sellers only ever interact with seller-app's own dashboard (they publish once, then wait — they never see you or the bulk buyer directly). The bulk buyer only ever interacts with buyer-app's dashboard, discovering and buying your published block like any other offer — they never see the individual pooled sellers. <b>You</b> are the only one who sees both sides and does the pooling/splitting math.
+  </div>
 
   <div class="panel">
     <h2>1 · Discover real offers to pool</h2>

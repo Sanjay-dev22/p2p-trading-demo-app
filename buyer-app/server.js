@@ -18,6 +18,16 @@ const PORT = process.env.PORT || 4001;
 // matching BUYER_APP_URL.
 const SELLER_APP_URL = process.env.SELLER_APP_URL || "http://localhost:4002";
 
+// Same extraction already used inline in /api/buy below, pulled out so every
+// onix-rejection route gives the real reason, not a generic "onix rejected X".
+function extractOnixError(result) {
+  return (
+    result.json?.message?.error?.message ||
+    (result.text && result.text.trim()) ||
+    `onix returned HTTP ${result.status || "(no response)"} with no readable body`
+  );
+}
+
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -223,7 +233,7 @@ app.post("/api/discover", async (req, res) => {
     const result = await beckn.postToOnix("/bap/caller/discover", { context, message });
     if (!result.ok) {
       console.error("discover rejected by onix:", result.status, result.text);
-      return res.status(result.status || 502).json({ error: "onix rejected discover", detail: result.json, raw: result.text });
+      return res.status(result.status || 502).json({ error: extractOnixError(result), detail: result.json, raw: result.text });
     }
     res.json({ ok: true });
   } catch (err) {

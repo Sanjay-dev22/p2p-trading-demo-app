@@ -620,6 +620,38 @@ same shape as Gap 7.
    aggregator role introduces: a brand-new intermediary the protocol has
    no enforcement mechanism for at all.
 
+### Two more real bugs, found by actually using the dashboards, now fixed
+
+6. **PROVEN LIVE: `available-offers` showed every real offer on the shared
+   sandbox, not just our own — and let them be pooled and "sold."** The
+   discover response's `seller_id` field is the devkit's own generic
+   tutorial identity (`sellerapp.example.com`), not a unique one — real,
+   unrelated testers on the shared network never renamed it either.
+   Before this fix, the aggregator trusted that string alone, so all ~100+
+   accumulated offers from every other tester who ever used this devkit
+   looked identical to "ours." A block was actually published and sold
+   this way during testing, built almost entirely from offers that were
+   never really the operator's to repackage. Fixed with the exact check
+   `buyer-app`'s own `resolveOffer()` already uses for the same reason:
+   cross-check the offer_id against seller-app's own live `/api/offers`
+   catalog, not the seller_id string. Applied at three points, not one —
+   `available-offers` (excludes foreign offers before they can even be
+   selected), `pool/enroll` (re-verifies server-side, never trusts the
+   client alone), and `pool/publish` (re-verifies again right before
+   publishing, since time passes and someone else could buy part of a
+   pooled offer directly in the meantime — see risk #1 above).
+7. **Generic "onix rejected the X" errors hid the real, useful reason.**
+   A ₹2/kWh publish attempt returned only `"onix rejected the publish"`,
+   while the real NACK — `"PRICE_PER_KWH 2 is outside the published band
+   6-15 INR/kWh (below minimum)"` — was sitting unread in the response
+   body the whole time. `buyer-app`'s own `/api/buy` handler already had
+   the right extraction (`result.json.message.error.message`, falling back
+   to raw text, falling back to the HTTP status); every other onix-facing
+   route in all three apps now uses the same `extractOnixError()` pattern.
+   No frontend changes were needed — all three dashboards already read
+   `body.error` correctly; they were just never given the real message to
+   show.
+
 ---
 
 ## 10. Glossary (Beckn/onix terms used throughout)

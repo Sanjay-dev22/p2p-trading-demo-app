@@ -66,6 +66,8 @@
   .tl-hop pre { display: none; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin: 6px 0 0; font-size: 11px; max-height: 240px; overflow: auto; }
   .tl-hop pre.show { display: block; }
   .delivery-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .role-banner { background: rgba(47,224,198,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); max-width: 960px; margin: 16px auto 0; }
+  .role-banner b { color: var(--text); }
 </style>
 </head>
 <body>
@@ -80,6 +82,9 @@
     <button class="secondary" id="resetBtn" title="Wipe this platform's own offers and trades">Reset demo</button>
   </div>
 </header>
+<div class="role-banner">
+  <b>Your role:</b> an individual energy producer (prosumer). <b>Your job:</b> publish what you have to sell — once per offer, then wait. Anyone can discover and buy it: a direct buyer, or an aggregator pooling you together with other small sellers into a bigger block. You can't tell which happened just by looking at the incoming request — both arrive here the same way. <b>Note:</b> if an aggregator pools your offer, this demo currently does <i>not</i> reserve your capacity automatically — your offer keeps showing as fully available to any other direct buyer too, until Gap-7-style reservation is added (see KNOWLEDGE-BASE.md §9).
+</div>
 <main>
   <div class="panel">
     <h2>Publish a new offer <span class="conn down" id="conn" style="float:right">connecting…</span></h2>

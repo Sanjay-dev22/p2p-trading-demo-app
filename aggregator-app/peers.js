@@ -70,6 +70,20 @@ async function fetchDiscoveredOffers() {
   return r.ok ? r.json || [] : [];
 }
 
+// seller-app's own, authoritative, currently-live catalog. Found needed
+// during live use: discover's seller_id field is the devkit's own generic
+// tutorial identity ("sellerapp.example.com"), not a unique one -- plenty of
+// real, unrelated testers on the shared sandbox never renamed it either, so
+// "seller_id looks like ours" tells you nothing. buyer-app's own
+// resolveOffer() already solved this the only real way: check the offer_id
+// against seller-app's own live catalog directly. This app has to do the
+// exact same real check, or "available to pool" silently includes real
+// other people's real offers we have no right to repackage and sell.
+async function fetchSellerOffers() {
+  const r = await getJson(`${SELLER_APP_URL}/api/offers`);
+  return r.ok ? r.json || [] : [];
+}
+
 // Publishes the pooled block through seller-app's own, already-working
 // publish pipeline — real onix call, real signed message, real catalog
 // entry. Returns seller-app's own response verbatim (includes the real
@@ -98,6 +112,7 @@ module.exports = {
   nowIso,
   triggerDiscover,
   fetchDiscoveredOffers,
+  fetchSellerOffers,
   publishBlock,
   fetchSellerTrades,
 };

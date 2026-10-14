@@ -78,11 +78,32 @@ app.post("/api/discover", async (req, res) => {
 
 // Real offers buyer-app has actually discovered, minus whatever is already
 // enrolled in the current pending pool (no double-pooling the same offer).
+//
+// FOUND DURING LIVE USE, FIXED HERE: this used to trust discover's own
+// seller_id field to decide what's "ours" to pool. That field is the
+// devkit's own generic tutorial identity ("sellerapp.example.com"), not a
+// unique one -- real, unrelated testers on the shared sandbox never
+// renamed it either, so every one of their real offers looked identical to
+// ours. The only real check is the same one buyer-app's resolveOffer()
+// already uses: is this exact offer_id actually sitting in seller-app's own
+// live catalog, right now. Anything that isn't is excluded here, before it
+// can ever be enrolled -- not just warned about after the fact.
 app.get("/api/available-offers", async (req, res) => {
   try {
     const discovered = await peers.fetchDiscoveredOffers();
+    const ownOffers = await peers.fetchSellerOffers();
+    const ownById = new Map(ownOffers.map((o) => [o.id, o]));
     const pending = db.prepare("SELECT offer_id FROM pool_members WHERE block_id IS NULL").all().map((r) => r.offer_id);
-    const available = discovered.filter((o) => !pending.includes(o.offer_id) && o.price_per_kwh && o.available_qty > 0);
+    const available = discovered
+      .filter((o) => ownById.has(o.offer_id) && !pending.includes(o.offer_id))
+      .map((o) => {
+        // seller-app's own remaining_qty is the real, current, authoritative
+        // number -- the discovered_offers row can be stale (sold since, or
+        // simply an older snapshot from the last discover).
+        const own = ownById.get(o.offer_id);
+        return { ...o, price_per_kwh: own.price_per_kwh, available_qty: own.remaining_qty };
+      })
+      .filter((o) => o.price_per_kwh && o.available_qty > 0);
     res.json(available);
   } catch (err) {
     console.error("available-offers failed:", err);
@@ -98,19 +119,38 @@ app.get("/api/pool", (req, res) => {
   res.json({ members: rows, totalQty: round2(totalQty), blendedPrice });
 });
 
-app.post("/api/pool/enroll", (req, res) => {
+// Never trusts the client alone (same philosophy as seller-app's own
+// /api/respond capacity check) -- re-verifies server-side that this exact
+// offer is still genuinely ours and still has enough real remaining
+// capacity, right before accepting the enrollment. The UI's own
+// /api/available-offers list is already filtered, but that's a courtesy;
+// this is what actually stops a stale or manipulated request.
+app.post("/api/pool/enroll", async (req, res) => {
   const { offerId, sellerId, pricePerKwh, qty } = req.body || {};
   const quantity = Number(qty);
   const price = Number(pricePerKwh);
   if (!offerId || !quantity || quantity <= 0 || !price || price <= 0) {
     return res.status(400).json({ error: "offerId, a positive qty, and a positive pricePerKwh are required" });
   }
-  const now = peers.nowIso();
-  db.prepare("INSERT INTO pool_members (block_id, offer_id, seller_id, price_per_kwh, enrolled_qty, enrolled_at) VALUES (NULL,?,?,?,?,?)").run(
-    offerId, sellerId || "unknown", price, quantity, now
-  );
-  broadcast("pool_updated", {});
-  res.json({ ok: true });
+  try {
+    const ownOffers = await peers.fetchSellerOffers();
+    const own = ownOffers.find((o) => o.id === offerId);
+    if (!own) {
+      return res.status(409).json({ error: `${offerId} is not currently on our own seller-app's live catalog -- it may belong to a different real participant on the shared network (seller_id alone can't tell them apart), or it may have already been sold.` });
+    }
+    if (quantity > own.remaining_qty) {
+      return res.status(409).json({ error: `Only ${own.remaining_qty} kWh remains available on ${offerId} right now -- ${quantity} kWh was requested.` });
+    }
+    const now = peers.nowIso();
+    db.prepare("INSERT INTO pool_members (block_id, offer_id, seller_id, price_per_kwh, enrolled_qty, enrolled_at) VALUES (NULL,?,?,?,?,?)").run(
+      offerId, sellerId || "unknown", price, quantity, now
+    );
+    broadcast("pool_updated", {});
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("pool/enroll failed:", err);
+    res.status(500).json({ error: String(err.message || err) });
+  }
 });
 
 app.post("/api/pool/unenroll/:id", (req, res) => {
@@ -132,6 +172,25 @@ app.post("/api/pool/publish", async (req, res) => {
     if (members.length < 2) {
       return res.status(400).json({ error: "pool a least 2 small offers before publishing a block" });
     }
+
+    // Re-verify every member right before publishing, not just at enroll
+    // time -- real time passes between the two (someone else could have
+    // bought part of a pooled offer directly in the meantime, since
+    // enrolling never reserves it -- see KNOWLEDGE-BASE.md §9's documented
+    // gap on this). Refuses to publish a block built on stale numbers
+    // rather than silently overstating what's actually still available.
+    const ownOffers = await peers.fetchSellerOffers();
+    const ownById = new Map(ownOffers.map((o) => [o.id, o]));
+    for (const m of members) {
+      const own = ownById.get(m.offer_id);
+      if (!own) {
+        return res.status(409).json({ error: `${m.offer_id} is no longer on our own seller-app's live catalog -- remove it from the pool before publishing.` });
+      }
+      if (m.enrolled_qty > own.remaining_qty) {
+        return res.status(409).json({ error: `${m.offer_id} now has only ${own.remaining_qty} kWh remaining (someone else may have bought part of it directly) -- re-enroll it at a lower quantity before publishing.` });
+      }
+    }
+
     const totalQty = round2(members.reduce((s, m) => s + m.enrolled_qty, 0));
     const blendedBase = members.reduce((s, m) => s + m.enrolled_qty * m.price_per_kwh, 0) / totalQty;
     const blockPrice = round2(blendedBase + margin);
@@ -139,7 +198,8 @@ app.post("/api/pool/publish", async (req, res) => {
     const result = await peers.publishBlock({ quantityKwh: totalQty, pricePerKwh: blockPrice });
     if (!result.ok || !result.json?.ok) {
       console.error("publishBlock rejected:", result.status, result.text);
-      return res.status(result.status || 502).json({ error: "seller-app rejected the block publish", detail: result.json, raw: result.text });
+      const reason = result.json?.error || result.json?.message?.error?.message || (result.text && result.text.trim()) || `seller-app returned HTTP ${result.status || "(no response)"}`;
+      return res.status(result.status || 502).json({ error: reason, detail: result.json, raw: result.text });
     }
     const offerId = result.json.offer.id;
     const now = peers.nowIso();

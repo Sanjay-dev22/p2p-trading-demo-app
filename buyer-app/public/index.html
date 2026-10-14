@@ -71,6 +71,8 @@
   .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--border); }
   .filters .field input, .filters .field select { width: 110px; }
   .filters label.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .role-banner { background: rgba(90,169,255,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); max-width: 960px; margin: 16px auto 0; }
+  .role-banner b { color: var(--text); }
 </style>
 </head>
 <body>
@@ -82,6 +84,9 @@
     <button class="secondary" id="resetBtn" title="Wipe this platform's own offers and trades">Reset demo</button>
   </div>
 </header>
+<div class="role-banner">
+  <b>Your role:</b> the buyer. <b>Your job:</b> discover offers and buy what you want. You never know, and never need to know, whether what you bought was one individual seller's own small offer or an aggregator's pooled block of several sellers — they look and behave identically to you. Once you buy, your only remaining interaction is with whoever published it (the seller, or the aggregator wearing the seller's identity) through Accept → Confirm → Delivery → Settlement, exactly the same either way.
+</div>
 <main>
   <div class="panel">
     <h2>Discover offers</h2>

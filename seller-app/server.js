@@ -34,6 +34,21 @@ const WHEELING_CHARGE_SELLER_PER_KWH = 0.5;
 const WHEELING_CHARGE_BUYER_PER_KWH = 0.5;
 const round2 = (x) => Math.round(x * 100) / 100;
 
+// The real, useful reason onix rejected something is almost always already
+// in result.json.message.error.message (a real policy NACK, e.g. "PRICE_PER_KWH
+// 2 is outside the published band 6-15 INR/kWh") — found missing here during
+// live use: every onix-rejection route below was discarding that and showing
+// only a generic "onix rejected the X" instead. Mirrors the extraction
+// buyer-app/server.js's own /api/buy handler already did correctly — this
+// makes every route use the same real-reason-first fallback chain.
+function extractOnixError(result) {
+  return (
+    result.json?.message?.error?.message ||
+    (result.text && result.text.trim()) ||
+    `onix returned HTTP ${result.status || "(no response)"} with no readable body`
+  );
+}
+
 // Real settlement math, FIRM commitments only (this demo never declares
 // BEST_EFFORT, so every delivery here is FIRM — same default the policy
 // itself falls back to when commitmentType is absent).
@@ -180,7 +195,7 @@ app.post("/api/publish", async (req, res) => {
     const result = await beckn.postToOnix("/bpp/caller/catalog/publish", { context, message });
     if (!result.ok) {
       console.error("publish rejected by onix:", result.status, result.text);
-      return res.status(result.status || 502).json({ error: "onix rejected the publish", detail: result.json, raw: result.text });
+      return res.status(result.status || 502).json({ error: extractOnixError(result), detail: result.json, raw: result.text });
     }
 
     const publishedAt = beckn.nowIso();
@@ -323,7 +338,7 @@ app.post("/api/respond/:transactionId", async (req, res) => {
     const stored = JSON.parse(row.raw_context);
     const onInit = beckn.buildOnInit(stored.context, stored.message.contract, counter);
     const result = await beckn.postToOnix("/bpp/caller/on_init", onInit);
-    if (!result.ok) { console.error("on_init rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: "onix rejected on_init", detail: result.json, raw: result.text }); }
+    if (!result.ok) { console.error("on_init rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: extractOnixError(result), detail: result.json, raw: result.text }); }
 
     if (offerRow) {
       db.prepare("UPDATE offers SET remaining_qty = remaining_qty - ? WHERE id=?").run(agreedQty, row.offer_id);
@@ -397,7 +412,7 @@ app.post("/api/deliver/:transactionId", async (req, res) => {
       finalAlloc, pricePerKwh, requestedQty, settlementAmount, shortfallKwh, wheelingSeller, penalty, txnRef,
     });
     const result = await beckn.postToOnix("/bpp/caller/on_status", onStatus);
-    if (!result.ok) { console.error("on_status rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: "onix rejected on_status", detail: result.json, raw: result.text }); }
+    if (!result.ok) { console.error("on_status rejected by onix:", result.status, result.text); return res.status(result.status || 502).json({ error: extractOnixError(result), detail: result.json, raw: result.text }); }
 
     const now = beckn.nowIso();
     db.prepare("UPDATE trades SET status=?, final_alloc=?, settlement_amount=?, raw_context=?, updated_at=? WHERE transaction_id=?").run(
