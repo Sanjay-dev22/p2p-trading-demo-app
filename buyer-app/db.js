@@ -57,6 +57,12 @@ for (const stmt of [
   "ALTER TABLE trades ADD COLUMN seller_price_per_kwh REAL",
   "ALTER TABLE trades ADD COLUMN seller_qty REAL",
   "ALTER TABLE trades ADD COLUMN decline_reason TEXT",
+  // bpp_uri: the *catalog's* own routing endpoint for whoever published this
+  // offer — not part of the offer object itself, so it has to be captured
+  // separately at discovery time (see server.js's webhook handler) or it's
+  // lost. Needed to know whether a foreign offer is even technically
+  // reachable at all, independent of whether we choose to trade with it.
+  "ALTER TABLE discovered_offers ADD COLUMN bpp_uri TEXT",
 ]) {
   try { db.exec(stmt); } catch (_) { /* column already exists */ }
 }

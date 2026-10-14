@@ -42,6 +42,9 @@
   .conn.up::before { content: "● "; color: var(--accent); }
   .conn.down::before { content: "● "; color: var(--red); }
   .err-banner { background: rgba(255,107,107,0.1); border: 1px solid var(--red); color: var(--red); border-radius: 8px; padding: 8px 12px; font-size: 12px; margin-bottom: 10px; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; padding: 4px 9px; font-size: 11px; cursor: pointer; }
+  .rawbox { display: none; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-top: 8px; font-size: 11px; max-height: 260px; overflow: auto; width: 100%; }
+  .rawbox.show { display: block; }
 </style>
 </head>
 <body>
@@ -115,8 +118,41 @@ function timeAgo(iso) {
   if (h < 24) return `${h}h ago`;
   return new Date(iso).toLocaleString();
 }
+function escapeHtml(s) { return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+// Same pattern as the Buyer Platform dashboard: raw payload data was always
+// sent by /api/offers (raw_json), just never rendered here before — this
+// only adds a way to actually look at it, per-offer, on demand.
+const openRawOffers = new Set();
+function toggleRawOffer(id) {
+  if (openRawOffers.has(id)) { openRawOffers.delete(id); } else { openRawOffers.add(id); }
+  renderOffers(lastOfferList);
+}
+const openRawLedger = new Set();
+function toggleRawLedger(txn) {
+  if (openRawLedger.has(txn)) { openRawLedger.delete(txn); } else { openRawLedger.add(txn); }
+  renderLedger(lastLedgerPayload);
+}
+let lastLedgerPayload = { trades: [] };
+function parseOfferMeta(rawJsonStr) {
+  let raw;
+  try { raw = JSON.parse(rawJsonStr); } catch (_) { return { type: null, validity: null, expired: false, intervalStart: null, raw: null }; }
+  const type = raw?.offerAttributes?.["@type"] || null;
+  const v = raw?.validity || raw?.offerAttributes?.validityWindow;
+  const validity = v ? { start: v.startDate || v["schema:startTime"], end: v.endDate || v["schema:endTime"] } : null;
+  const expired = validity?.end ? new Date(validity.end).getTime() < Date.now() : false;
+  // See index.html's parseOfferMeta for the full reasoning — verified
+  // directly (2026-09-18) that this field means "true publish time" for our
+  // own offers (our own code sets it that way) but NOT reliably so for a
+  // foreign publisher's (the real gigawatt example uses it for a
+  // delivery-slot start, inside its own stated validity window instead).
+  const intervalStart = raw?.offerAttributes?.commitmentAttributes?.intervalPeriod?.start || null;
+  return { type, validity, expired, intervalStart, raw };
+}
+let lastOfferList = [];
 
 function renderOffers(list) {
+  lastOfferList = list;
   $("#statTotalOffers").textContent = list.length;
   const own = list.filter((o) => myOfferIds.has(o.offer_id));
   const otherSellers = new Set(list.filter((o) => !myOfferIds.has(o.offer_id)).map((o) => o.seller_id));
@@ -127,18 +163,44 @@ function renderOffers(list) {
   if (!list.length) { el.innerHTML = '<div class="empty">No offers discovered yet — hit Refresh on the Buyer Platform dashboard.</div>'; return; }
   el.innerHTML = list.map((o) => {
     const isOwn = myOfferIds.has(o.offer_id);
+    const meta = parseOfferMeta(o.raw_json);
+    const rawOpen = openRawOffers.has(o.offer_id);
+    const validityText = meta.validity
+      ? `stated availability: ${meta.validity.start ? new Date(meta.validity.start).toLocaleString() : "?"} → ${meta.validity.end ? new Date(meta.validity.end).toLocaleString() : "?"}${meta.expired ? " — EXPIRED" : ""}`
+      : "stated availability: not present in this offer's own data";
+    const endpointText = !isOwn
+      ? (o.bpp_uri ? `real routing endpoint on file: ${o.bpp_uri} (not wired to send to)` : "no routing endpoint captured for this publisher")
+      : "";
+    // Only "published" for offers we KNOW are ours — see parseOfferMeta's
+    // own comment for why the same field can't be trusted that way for a
+    // foreign publisher.
+    const bornText = !meta.intervalStart
+      ? "no timing field in this offer's own data to date it by"
+      : isOwn
+        ? `published: ${new Date(meta.intervalStart).toLocaleString()}`
+        : `commitment interval starts: ${new Date(meta.intervalStart).toLocaleString()} (this publisher's own use of this field is unconfirmed)`;
     return `
-    <div class="row ${isOwn ? "mine" : ""}">
-      <div class="meta">
-        <div class="primary">${o.name || o.offer_id}</div>
-        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · discovered ${timeAgo(o.discovered_at)}</div>
+    <div class="row ${isOwn ? "mine" : ""}" style="flex-direction:column;align-items:stretch">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div class="meta">
+          <div class="primary">${o.name || o.offer_id}${meta.type && meta.type !== "EnergyTradeOffer" ? ` <span class="badge other">@type: ${meta.type}</span>` : ""}</div>
+          <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · last confirmed live ${timeAgo(o.discovered_at)}</div>
+          <div class="secondary">${escapeHtml(bornText)}</div>
+          <div class="secondary"${meta.expired ? ' style="color:var(--amber)"' : ""}>${validityText}</div>
+          ${endpointText ? `<div class="secondary">${escapeHtml(endpointText)}</div>` : ""}
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="badge ${isOwn ? "mine" : "other"}">${isOwn ? "ours, live now" : "external"}</span>
+          <button class="ghost" onclick="toggleRawOffer('${o.offer_id}')">${rawOpen ? "Hide" : "Show"} raw</button>
+        </div>
       </div>
-      <span class="badge ${isOwn ? "mine" : "other"}">${isOwn ? "ours, live now" : "external"}</span>
+      <pre class="rawbox ${rawOpen ? "show" : ""}">${rawOpen ? escapeHtml(JSON.stringify(meta.raw ?? {}, null, 2)) : ""}</pre>
     </div>`;
   }).join("");
 }
 
 function renderLedger(payload) {
+  lastLedgerPayload = payload;
   const list = payload.trades || [];
   $("#ledgerUrlLabel").textContent = payload.ledgerUrl || "the DEG Ledger";
   $("#statTotalTrades").textContent = list.length;
@@ -151,14 +213,26 @@ function renderLedger(payload) {
   if (!list.length) { el.innerHTML = '<div class="empty">No ledger-verified trades yet — settle a trade on the Seller Platform to see it appear here.</div>'; return; }
   el.innerHTML = list.map((t) => {
     const digestPreview = t.rowDigests[0] ? t.rowDigests[0].slice(0, 22) + "…" : "";
+    const rawOpen = openRawLedger.has(t.transactionId);
+    // The real per-interval rows (qty/price/currency/unit for each real
+    // settlement interval) are already fetched — groupTradesByTransaction
+    // just folds them into totalQty/avgPrice for the summary line above.
+    // Show the actual per-interval breakdown plus every ledger row's own
+    // digest, not just the first one and an average.
     return `
-    <div class="row mine">
-      <div class="meta">
-        <div class="primary">${t.totalQty} kWh @ ~₹${t.avgPrice ?? "?"}/kWh — ${t.orderItemId || t.transactionId.slice(0, 8)}</div>
-        <div class="secondary">${t.platformIdBuyer} ← ${t.platformIdSeller} · discoms: ${t.discomIdBuyer}/${t.discomIdSeller} · ${new Date(t.tradeTime).toLocaleString()}</div>
-        <div class="secondary digest">🔒 verified: ${digestPreview} (${t.rowDigests.length} ledger row${t.rowDigests.length === 1 ? "" : "s"}, roles: ${t.roles.join(", ")})</div>
+    <div class="row mine" style="flex-direction:column;align-items:stretch">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+        <div class="meta">
+          <div class="primary">${t.totalQty} kWh @ ~₹${t.avgPrice ?? "?"}/kWh — ${t.orderItemId || t.transactionId.slice(0, 8)}</div>
+          <div class="secondary">${t.platformIdBuyer} ← ${t.platformIdSeller} · discoms: ${t.discomIdBuyer}/${t.discomIdSeller} · real tradeTime: ${new Date(t.tradeTime).toLocaleString()}</div>
+          <div class="secondary digest">🔒 verified: ${digestPreview} (${t.rowDigests.length} ledger row${t.rowDigests.length === 1 ? "" : "s"}, roles: ${t.roles.join(", ")})</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="badge verified">ledger-verified</span>
+          <button class="ghost" onclick="toggleRawLedger('${t.transactionId}')">${rawOpen ? "Hide" : "Show"} raw</button>
+        </div>
       </div>
-      <span class="badge verified">ledger-verified</span>
+      <pre class="rawbox ${rawOpen ? "show" : ""}">${rawOpen ? escapeHtml(JSON.stringify(t, null, 2)) : ""}</pre>
     </div>`;
   }).join("");
 }

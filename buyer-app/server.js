@@ -376,11 +376,15 @@ app.post("/api/bap-webhook/:action", async (req, res) => {
           const payloads = interval0?.payloads || [];
           const price = payloads.find((p) => p.type === "PRICE_PER_KWH")?.values?.[0];
           const qty = payloads.find((p) => p.type === "AVAILABLE_QTY")?.values?.[0];
+          // bppUri lives on the *catalog*, not the offer itself — capture it
+          // now or it's gone (the offer object alone has no way back to its
+          // publisher's endpoint). This is what a real negotiation attempt
+          // with a foreign offer would need to actually be routable at all.
           db.prepare(
-            `INSERT INTO discovered_offers (offer_id, seller_id, name, price_per_kwh, available_qty, discovered_at, raw_json)
-             VALUES (?,?,?,?,?,?,?)
-             ON CONFLICT(offer_id) DO UPDATE SET price_per_kwh=excluded.price_per_kwh, available_qty=excluded.available_qty, discovered_at=excluded.discovered_at, raw_json=excluded.raw_json`
-          ).run(offer.id, cat.provider?.id || cat.bppId || "unknown", offer.descriptor?.name || offer.id, price ?? null, qty ?? null, now, JSON.stringify(offer));
+            `INSERT INTO discovered_offers (offer_id, seller_id, name, price_per_kwh, available_qty, discovered_at, raw_json, bpp_uri)
+             VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT(offer_id) DO UPDATE SET price_per_kwh=excluded.price_per_kwh, available_qty=excluded.available_qty, discovered_at=excluded.discovered_at, raw_json=excluded.raw_json, bpp_uri=excluded.bpp_uri`
+          ).run(offer.id, cat.provider?.id || cat.bppId || "unknown", offer.descriptor?.name || offer.id, price ?? null, qty ?? null, now, JSON.stringify(offer), cat.bppUri || null);
           count++;
         }
       }

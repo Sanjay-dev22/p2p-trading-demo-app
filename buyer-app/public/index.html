@@ -174,6 +174,42 @@ async function renderTimelineHtml(txn) {
 }
 function escapeHtml(s) { return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
 
+// ---------- Raw offer data, expandable — same pattern as the trade timeline
+// above. The backend already sends the full raw_json it stored (nothing was
+// ever withheld server-side); this just gives the dashboard a way to
+// actually look at it, since /api/offers alone never rendered it before. ----------
+const openRawOffers = new Set();
+function toggleRawOffer(id) {
+  if (openRawOffers.has(id)) { openRawOffers.delete(id); } else { openRawOffers.add(id); }
+  renderOffers(applyFilters(lastOfferRows));
+}
+
+// Pulls out whatever real timing info an offer's own raw payload actually
+// carries (its stated validity window, wherever that field lives in
+// whatever shape this particular offer turned out to be) — distinct from
+// discovered_at, which only ever means "the last time OUR OWN discover call
+// saw this still present," not when it was first published or how long it
+// was ever meant to be valid for.
+function parseOfferMeta(rawJsonStr) {
+  let raw;
+  try { raw = JSON.parse(rawJsonStr); } catch (_) { return { type: null, validity: null, expired: false, intervalStart: null }; }
+  const type = raw?.offerAttributes?.["@type"] || null;
+  const v = raw?.validity || raw?.offerAttributes?.validityWindow;
+  const validity = v ? { start: v.startDate || v["schema:startTime"], end: v.endDate || v["schema:endTime"] } : null;
+  const expired = validity?.end ? new Date(validity.end).getTime() < Date.now() : false;
+  // commitmentAttributes.intervalPeriod.start is the closest thing to a real
+  // "when" on an offer — but it is NOT a standardized publish timestamp.
+  // Verified directly (2026-09-18): our own seller-app literally sets this to
+  // now() at the moment /api/publish runs, so for OUR OWN offers it is the
+  // true publish time. For the real gigawatt offer, this same field instead
+  // sits an hour INSIDE that offer's own stated validity window — clearly
+  // marking one delivery/settlement slot's start, not when they published.
+  // Different real publishers use the field differently; only render it as
+  // "published" for offers we know are ours, otherwise label it honestly.
+  const intervalStart = raw?.offerAttributes?.commitmentAttributes?.intervalPeriod?.start || null;
+  return { type, validity, expired, intervalStart, raw };
+}
+
 // Whether a discovered offer is genuinely ours can NOT be determined by
 // comparing seller_id to "sellerapp.example.com" — that's the devkit's
 // own generic example participant ID from its tutorial fixtures, and
@@ -263,25 +299,64 @@ function renderOffers(list) {
   }
   el.innerHTML = list.map((o) => {
     const isOwn = myOfferIds.has(o.offer_id);
+    const meta = parseOfferMeta(o.raw_json);
     // The offer's descriptor name is always the same generic string
     // ("Demo Solar Offer") every seller publishes — showing only that
     // literally hides the one thing you need to actually act on this
     // offer (its ID), so the ID is always shown too, with its own copy
     // button, regardless of whether a name is also present.
-    const action = isOwn
-      ? `<button onclick="buyFromCard('${o.offer_id}')">Buy at ask</button>
-         <button class="secondary" onclick="bidOnCard('${o.offer_id}')">Place a bid</button>`
-      : `<span class="tag" title="Not currently live on our own Seller Platform's real catalog — either a different real network participant's offer (this demo has no live routing endpoint for their platform), or one of our own past offers that's no longer live">view only</span>`;
+    let action;
+    if (isOwn) {
+      action = `<button onclick="buyFromCard('${o.offer_id}')">Buy at ask</button>
+         <button class="secondary" onclick="bidOnCard('${o.offer_id}')">Place a bid</button>`;
+    } else {
+      // Still view-only: resolveOffer()/api/buy only ever route init to our
+      // own seller, on purpose (server.js) — negotiating with a genuinely
+      // different real participant would mean signing and sending a real
+      // message to their live system, untested and not something to wire up
+      // silently. Capturing their real endpoint (below) is a separate,
+      // reversible step from actually being allowed to trade with it.
+      action = `<span class="tag" title="This app only ever routes a real init to our own Seller Platform, on purpose">view only</span>`;
+    }
+    const endpointLine = !isOwn
+      ? (o.bpp_uri
+          ? `<div class="secondary">real routing endpoint on file: <span style="font-family:monospace">${escapeHtml(o.bpp_uri)}</span> (not wired to send to)</div>`
+          : `<div class="secondary" style="color:var(--muted)">no routing endpoint was captured for this publisher (this catalog response's bppUri was empty)</div>`)
+      : "";
+    const validityLine = meta.validity
+      ? `<div class="secondary">stated availability: ${meta.validity.start ? new Date(meta.validity.start).toLocaleString() : "?"} → ${meta.validity.end ? new Date(meta.validity.end).toLocaleString() : "?"}${meta.expired ? ' <span class="tag" style="color:var(--amber)">EXPIRED</span>' : ""}</div>`
+      : `<div class="secondary" style="color:var(--muted)">stated availability: not present in this offer's own data</div>`;
+    // Only claim this is a real "published" time for offers we KNOW are
+    // ours (our own code sets it to now() at publish) — for a foreign
+    // offer, the same field turned out (verified against the real
+    // gigawatt example) to mark a delivery-slot start instead, so it gets
+    // an honest, uncommitted label rather than a false "published" claim.
+    const bornLine = !meta.intervalStart
+      ? `<div class="secondary" style="color:var(--muted)">no timing field in this offer's own data to date it by</div>`
+      : isOwn
+        ? `<div class="secondary">published: ${new Date(meta.intervalStart).toLocaleString()}</div>`
+        : `<div class="secondary">commitment interval starts: ${new Date(meta.intervalStart).toLocaleString()} <span style="color:var(--muted)">(this publisher's own use of this field is unconfirmed — may not be their true publish moment)</span></div>`;
+    const rawOpen = openRawOffers.has(o.offer_id);
+    const rawPanel = rawOpen
+      ? `<div class="timeline show"><div class="tl-hop"><pre class="show">${escapeHtml(JSON.stringify(meta.raw ?? {}, null, 2))}</pre></div></div>`
+      : "";
     return `
-    <div class="row">
-      <div class="meta">
-        <div class="primary">${o.name ? o.name + " — " : ""}<span style="font-family:monospace">${o.offer_id}</span>${isOwn ? ' <span class="tag" style="color:var(--accent)">ours, live now</span>' : ""}</div>
-        <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · discovered ${timeAgo(o.discovered_at)}</div>
+    <div class="row-block">
+      <div class="top">
+        <div class="meta">
+          <div class="primary">${o.name ? o.name + " — " : ""}<span style="font-family:monospace">${o.offer_id}</span>${isOwn ? ' <span class="tag" style="color:var(--accent)">ours, live now</span>' : ""}${meta.type && meta.type !== "EnergyTradeOffer" ? ` <span class="tag">@type: ${meta.type}</span>` : ""}</div>
+          <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · last confirmed live ${timeAgo(o.discovered_at)}</div>
+          ${bornLine}
+          ${validityLine}
+          ${endpointLine}
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="secondary" onclick="copyOfferId('${o.offer_id}', this)">Copy ID</button>
+          ${action}
+          <button class="ghost" onclick="toggleRawOffer('${o.offer_id}')">${rawOpen ? "Hide" : "Show"} raw</button>
+        </div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <button class="secondary" onclick="copyOfferId('${o.offer_id}', this)">Copy ID</button>
-        ${action}
-      </div>
+      ${rawPanel}
     </div>`;
   }).join("");
 }

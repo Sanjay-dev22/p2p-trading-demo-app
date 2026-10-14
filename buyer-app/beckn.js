@@ -109,7 +109,14 @@ function buildDiscover() {
     timestamp: nowIso(),
     schemaContext: SCHEMA_CONTEXT,
   };
-  const message = { intent: { filters: { type: "jsonpath", expression: '$.catalogs[*].offers[*] ? (@.offerAttributes."@type" == "EnergyTradeOffer")' } } };
+  // Previously filtered to `@type == "EnergyTradeOffer"` only — that
+  // silently discarded anything else the shared catalog might be holding
+  // before we ever saw it. This asks for every offer in every catalog the
+  // endpoint returns, whatever shape it is; server.js stores whatever comes
+  // back verbatim (raw_json) rather than assuming one fixed schema, so an
+  // unrecognized type just shows up with its real data intact instead of
+  // being silently dropped.
+  const message = { intent: { filters: { type: "jsonpath", expression: "$.catalogs[*].offers[*]" } } };
   return { context, message };
 }
 
