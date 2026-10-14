@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aggregator Platform — P2P Trading Demo</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121822; --panel2: #182233; --border: #263349;
+    --text: #e8edf5; --muted: #8fa1bd; --accent: #c07f2a; --good: #2fe0c6; --red: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: 0.02em; }
+  header .role { color: var(--accent); font-weight: 600; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 14px; }
+  .panel p.hint { font-size: 12px; color: var(--muted); margin: -8px 0 14px; }
+  button { background: var(--accent); color: #2a1b02; border: none; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  button:hover { filter: brightness(1.1); }
+  button.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); padding: 6px 10px; font-size: 12px; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .list { display: flex; flex-direction: column; gap: 10px; }
+  .row { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .row .meta { display: flex; flex-direction: column; gap: 2px; }
+  .row .meta .primary { font-weight: 600; }
+  .row .meta .secondary { font-size: 12px; color: var(--muted); }
+  .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge.settled { background: rgba(47,224,198,0.25); color: var(--good); }
+  .badge.waiting { background: rgba(143,161,189,0.15); color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--accent); color: var(--text); padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transform: translateY(8px); transition: all 0.25s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .conn { font-size: 11px; color: var(--muted); }
+  .conn.up::before { content: "● "; color: var(--good); }
+  .conn.down::before { content: "● "; color: var(--red); }
+  .summary-bar { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 14px; }
+  .summary-bar .stat .num { font-size: 22px; font-weight: 700; color: var(--accent); }
+  .summary-bar .stat .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--muted); }
+  .field input { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; width: 140px; font-size: 14px; }
+  form.publish-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  table.payout { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  table.payout th, table.payout td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.payout th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  table.payout tfoot td { font-weight: 700; border-top: 2px solid var(--border); border-bottom: none; }
+  .simplifications { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .simplifications li { margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Aggregator Platform <span class="role">— pools small sellers into one block</span></h1>
+  <span class="conn down" id="conn">connecting…</span>
+</header>
+<main>
+
+  <div class="panel">
+    <h2>1 · Discover real offers to pool</h2>
+    <p class="hint">Asks buyer-app to run a real discover, then lists what it actually found on the shared network. Not a simulation.</p>
+    <button id="btnDiscover">Discover offers</button>
+    <div class="list" id="availableList" style="margin-top:14px"></div>
+  </div>
+
+  <div class="panel">
+    <h2>2 · Current pool (not yet published)</h2>
+    <div class="summary-bar">
+      <div class="stat"><div class="num" id="poolQty">0</div><div class="lbl">kWh pooled</div></div>
+      <div class="stat"><div class="num" id="poolBlended">₹0</div><div class="lbl">blended price/kWh</div></div>
+      <div class="stat"><div class="num" id="poolCount">0</div><div class="lbl">sellers pooled</div></div>
+    </div>
+    <div class="list" id="poolList"></div>
+    <form class="publish-form" id="publishForm" style="margin-top:16px">
+      <div class="field"><label>Aggregator margin (₹/kWh)</label><input type="number" step="0.01" id="margin" value="0.30" /></div>
+      <button type="submit" id="btnPublish">Publish pooled block</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>3 · Published blocks & disaggregation</h2>
+    <p class="hint">Once the bulk buyer (buyer-app) buys and seller-app reports delivery, the real settlement amount appears here — split back to each pooled seller at THEIR OWN original price, with the aggregator's margin shown explicitly.</p>
+    <div class="list" id="blocksList"></div>
+  </div>
+
+  <div class="panel">
+    <h2>What this demo simplifies (on purpose)</h2>
+    <ul class="simplifications" id="simplifications"></ul>
+  </div>
+
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const toast = (msg) => { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2800); };
+const money = (n) => n == null ? "—" : `₹${Number(n).toFixed(2)}`;
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const json = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+  return json;
+}
+
+async function loadAbout() {
+  const { simplifications } = await api("/api/about");
+  $("#simplifications").innerHTML = simplifications.map((s) => `<li>${s}</li>`).join("");
+}
+
+async function loadAvailable() {
+  const offers = await api("/api/available-offers");
+  const el = $("#availableList");
+  if (!offers.length) { el.innerHTML = `<div class="empty">No undiscovered-or-unpooled offers right now. Click Discover, or everything found is already in the pool below.</div>`; return; }
+  el.innerHTML = offers.map((o) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary">${o.name || o.offer_id}</div>
+        <div class="secondary">${o.offer_id} · ${o.seller_id} · ₹${o.price_per_kwh}/kWh · ${o.available_qty} kWh available</div>
+      </div>
+      <button class="secondary" onclick="enroll('${o.offer_id}','${o.seller_id}',${o.price_per_kwh},${o.available_qty})">Pool this offer</button>
+    </div>`).join("");
+}
+
+async function enroll(offerId, sellerId, price, qty) {
+  try {
+    await api("/api/pool/enroll", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId, sellerId, pricePerKwh: price, qty }) });
+    toast(`Pooled ${offerId}`);
+    await Promise.all([loadAvailable(), loadPool()]);
+  } catch (e) { toast(`Failed: ${e.message}`); }
+}
+
+async function unenroll(id) {
+  await api(`/api/pool/unenroll/${id}`, { method: "POST" });
+  await Promise.all([loadAvailable(), loadPool()]);
+}
+
+async function loadPool() {
+  const { members, totalQty, blendedPrice } = await api("/api/pool");
+  $("#poolQty").textContent = totalQty;
+  $("#poolBlended").textContent = `₹${blendedPrice}`;
+  $("#poolCount").textContent = members.length;
+  const el = $("#poolList");
+  el.innerHTML = members.length ? members.map((m) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary">${m.offer_id}</div>
+        <div class="secondary">${m.seller_id} · ₹${m.price_per_kwh}/kWh · ${m.enrolled_qty} kWh</div>
+      </div>
+      <button class="ghost" onclick="unenroll(${m.id})">Remove</button>
+    </div>`).join("") : `<div class="empty">No sellers pooled yet — pool at least 2 above before publishing.</div>`;
+  $("#btnPublish").disabled = members.length < 2;
+}
+
+async function loadBlocks() {
+  const blocks = await api("/api/blocks");
+  const el = $("#blocksList");
+  if (!blocks.length) { el.innerHTML = `<div class="empty">No blocks published yet.</div>`; return; }
+  el.innerHTML = blocks.map((b) => {
+    const d = b.disaggregation;
+    const settled = d.status === "SETTLED";
+    let payoutHtml = "";
+    if (settled && d.memberPayouts) {
+      payoutHtml = `
+        <table class="payout">
+          <thead><tr><th>Seller</th><th>Own price</th><th>Delivered share</th><th>Net payout</th></tr></thead>
+          <tbody>
+            ${d.memberPayouts.map((m) => `<tr><td>${m.sellerId} (${m.offerId})</td><td>₹${m.originalPricePerKwh}/kWh</td><td>${m.deliveredShare} kWh</td><td>${money(m.net)}</td></tr>`).join("")}
+          </tbody>
+          <tfoot>
+            <tr><td colspan="3">Bulk buyer paid</td><td>${money(d.settlementAmount)}</td></tr>
+            <tr><td colspan="3">Sum to pooled sellers</td><td>${money(d.sumMemberNet)}</td></tr>
+            <tr><td colspan="3">Aggregator margin + handling</td><td>${money(d.aggregatorMargin)}</td></tr>
+          </tfoot>
+        </table>`;
+    }
+    return `
+      <div class="row" style="flex-direction:column; align-items:stretch;">
+        <div class="row" style="background:transparent; border:none; padding:0;">
+          <div class="meta">
+            <div class="primary">${b.id}</div>
+            <div class="secondary">${b.total_quantity_kwh} kWh @ ₹${b.blended_price_per_kwh}/kWh · ${b.member_count} sellers pooled · margin ₹${b.margin_per_kwh}/kWh</div>
+          </div>
+          <span class="badge ${settled ? "settled" : "waiting"}">${settled ? "Settled" : "Awaiting bulk buyer / delivery report"}</span>
+        </div>
+        ${payoutHtml}
+      </div>`;
+  }).join("");
+}
+
+$("#btnDiscover").onclick = async () => {
+  try { await api("/api/discover", { method: "POST" }); toast("Discover sent — refreshing in a moment…"); setTimeout(loadAvailable, 1500); }
+  catch (e) { toast(`Failed: ${e.message}`); }
+};
+
+$("#publishForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const marginPerKwh = Number($("#margin").value) || 0.3;
+    await api("/api/pool/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marginPerKwh }) });
+    toast("Block published — discoverable by buyer-app now");
+    await Promise.all([loadPool(), loadBlocks(), loadAvailable()]);
+  } catch (e2) { toast(`Failed: ${e2.message}`); }
+};
+
+function connectWs() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { $("#conn").textContent = "live"; $("#conn").className = "conn up"; };
+  ws.onclose = () => { $("#conn").textContent = "disconnected"; $("#conn").className = "conn down"; setTimeout(connectWs, 2000); };
+  ws.onmessage = (ev) => {
+    const { type } = JSON.parse(ev.data);
+    if (type === "pool_updated") loadPool();
+    if (type === "block_published") { loadBlocks(); loadPool(); }
+    if (type === "reset") { loadAvailable(); loadPool(); loadBlocks(); }
+  };
+}
+
+// Blocks awaiting settlement are polled (the real settlement is driven by
+// seller-app's own dashboard — Accept, Report Delivery — not by anything
+// this app can push); a short poll is the simplest honest way to reflect
+// that external, real progress without the user having to manually refresh.
+setInterval(loadBlocks, 5000);
+
+loadAbout();
+loadAvailable();
+loadPool();
+loadBlocks();
+connectWs();
+</script>
+</body>
+</html>
