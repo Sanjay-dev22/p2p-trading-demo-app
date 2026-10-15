@@ -1,140 +1,217 @@
 # P2P Trading Demo App
 
-Two real, independent web apps — a **Seller Platform** and a **Buyer
-Platform** — that trade real solar energy over the real local Beckn/onix
-network (`ies-devkit/devkits/p2p-trading-ies-wave2`), replacing the
-`fidedocker/sandbox-2.0` fixture-replay stub the devkit ships with.
+Four real, independent web apps trading real solar energy over the real
+local Beckn/onix network (`p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2`,
+a sparse clone of the public `beckn/DEG` devkit), replacing the
+`fidedocker/sandbox-2.0` fixture-replay stubs the devkit ships with:
 
-See `ARCHITECTURE.md` for the (currently shelved, future) production-grade
-design, and `DEMO-APP-PLAN.md` for the design this actually implements.
+| App | Port | Role |
+|---|---|---|
+| **Seller Platform** (`seller-app/`) | 4002 | an individual prosumer — publishes small offers, then waits |
+| **Buyer Platform** (`buyer-app/`) | 4001 | an independent bulk buyer — discovers and buys whatever fits, including a pooled block |
+| **Aggregator Platform** (`aggregator-app/`) | 4003 | pools several small sellers' offers into one bigger block, matches demand, owns that block's whole lifecycle |
+| **Grid/DISCOM Platform** (`grid-app/`) | 4004 | the demand side — posts a bulk requirement and buys the matching block itself |
+
+For the full engineering history, every bug found and fixed, and the exact
+reasoning behind each design decision, see **`KNOWLEDGE-BASE.md`** — it is
+the living source of truth for this project and is kept up to date after
+every change. `ARCHITECTURE.md` is the original pre-build design doc; it
+predates all four apps actually being built and is kept only as history,
+not as a description of current behavior.
 
 ## What's real here
 
-Every message (`catalog/publish`, `discover`, `init`, `on_init`, `confirm`,
-`on_confirm`, `on_status`) is a genuine, signed Beckn v2 call through the
-real `onix-buyerapp`/`onix-sellerapp` adapters — real schema validation,
-real `.rego` policy enforcement (including a real live rejection path),
-real settlement math. Nothing is scripted or replayed; every number in the
+Every message (`catalog/publish`, `discover`, `select`, `init`, `on_init`,
+`confirm`, `on_confirm`, `status`, `on_status`) is a genuine, signed Beckn
+v2 call through real onix adapters — real schema validation, real `.rego`
+policy enforcement (including a real live rejection path), real settlement
+math, and (for buyer-app and grid-app trades) a real cascade to the
+external IES ledger. Nothing is scripted or replayed; every number in the
 UI came from a real HTTP round trip started by an actual click.
 
-**Storage**: SQLite (one file per app, `seller-app/seller-app.db` /
-`buyer-app/buyer-app.db`) — no external DB server. **Live updates**: a
-plain WebSocket per app — no Redis, no job queue. **Auth**: none — you
-operate both platforms yourself, exactly like the underlying devkit's own
+Four independent onix adapter instances now run underneath these four
+apps — `onix-sellerapp`, `onix-buyerapp`, `onix-aggregatorapp`,
+`onix-gridapp` — each with its own routing hostname
+(`{seller,buyer,aggregator,grid}app.example.com`). `onix-aggregatorapp` and
+`onix-gridapp` reuse `sellerapp.example.com`'s and `buyerapp.example.com`'s
+already-registered signing keys respectively rather than a newly-registered
+identity (no new DeDi registration needed — see `KNOWLEDGE-BASE.md` §9 for
+exactly why that's safe and how it works).
+
+**Storage**: SQLite (one file per app, `node:sqlite`, no external DB
+server). **Live updates**: a plain WebSocket per app where used (seller-app,
+buyer-app, aggregator-app) — no Redis, no job queue. **Auth**: none — you
+operate every platform yourself, exactly like the underlying devkit's own
 demo does.
 
 ## One-time setup
 
 The Beckn network itself lives in the working devkit copy at
-`p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/` (not the read-only
-reference clone under `ies-devkit/`). Its `install/docker-compose.yml` has
-`sandbox-buyerapp`/`sandbox-sellerapp` commented out, and
-`config/local-p2p-trading-routing-{BuyerApp-BapReceiver,SellerApp-BppReceiver}.yaml`
-repointed at `host.docker.internal:4001`/`:4002` — this app's own ports —
-instead of those containers.
+`p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/` (not any read-only
+reference clone). Its config/compose/Caddy files are local-only and never
+committed (it's a sparse clone of the public upstream repo).
 
 ```bash
 cd p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/install
 docker compose up -d
-docker compose ps   # confirm everything is Up/healthy — no sandbox-buyerapp/sandbox-sellerapp rows
+docker compose ps   # confirm everything is Up/healthy
+```
+
+Start the local policy file server (serves the one locally-amended demo
+policy — see `KNOWLEDGE-BASE.md` §4 for why):
+```bash
+cd p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/policies
+python -m http.server 8099
 ```
 
 Install each app's dependencies once:
 ```bash
-cd p2p-trading-app/seller-app && npm install
-cd ../buyer-app && npm install
+cd p2p-trading-app/seller-app     && npm install
+cd ../buyer-app                   && npm install
+cd ../aggregator-app               && npm install
+cd ../grid-app                     && npm install
 ```
 
 ## Running the demo
 
-Two terminals, from `p2p-trading-app/`:
+Four terminals, from `p2p-trading-app/`:
 ```bash
-cd seller-app && npm start   # http://localhost:4002
-cd buyer-app  && npm start   # http://localhost:4001
+cd seller-app      && npm start   # http://localhost:4002
+cd buyer-app       && npm start   # http://localhost:4001
+cd aggregator-app  && npm start   # http://localhost:4003
+cd grid-app        && npm start   # http://localhost:4004
 ```
 
-Open both URLs — ideally side by side, two browser windows. Live updates
-push over WebSocket in both directions; nothing needs a manual refresh.
+If `onix-sellerapp`/`onix-buyerapp`/etc. aren't listening on the default
+ports the apps expect, set `ONIX_SELLER_URL` / `ONIX_BUYER_URL` /
+`ONIX_AGGREGATOR_URL` / `ONIX_GRID_URL` accordingly (check
+`docker-compose.yml` for the actual host ports in use).
 
-## The demo script
+Open all four dashboards — ideally side by side. Where WebSocket updates
+exist they push live in both directions; otherwise dashboards poll every
+few seconds — nothing needs a manual refresh either way.
 
-1. **Seller** (`:4002`): type a quantity/price, click **Publish offer**.
+## The demo flow
+
+There are two independent paths through this network. Run either, or
+both together.
+
+### A. Direct P2P — seller ↔ buyer, no aggregation
+
+1. **Seller** (`:4002`): enter a quantity/price, click **Publish offer**.
    This really calls `catalog/publish` on `onix-sellerapp`.
-2. **Buyer** (`:4001`): paste that offer's id into "Buy directly / place a
-   bid" (or wait — "Discover offers" fires a real `discover` too, though
-   the shared discovery service it hits doesn't reliably echo back a very
-   recent publish in this sandbox — see the honesty note below). The bid
-   price field is prefilled with the seller's real ask but is editable —
-   leave it as-is to buy outright, or lower it to negotiate. Click
-   **Send bid**. This fires a real, signed `init` carrying that price as
-   the buyer's actual bid.
-3. **Seller**: the request appears live in "Incoming requests," showing the
-   bid against the seller's own current ask. Three real outcomes, not one:
-   - **Accept bid** — sends a real `on_init` echoing the buyer's terms.
-   - **Send counter-offer** — sends a real `on_init` with the seller's own
-     price/quantity instead (same message shape, different numbers).
-   - **Decline** — no onix call at all (a BPP simply never answering an
-     `init` is valid Beckn behavior); the buyer is told directly over a
-     small app-to-app notification endpoint, since there's no real
-     NACK-shaped `on_init` to send for this.
-4. If the seller countered, the buyer sees "Seller countered: ₹X/kWh for Y
-   kWh" with **Accept counter** (sends a real `confirm`) or **Decline
-   counter** (no network message; the seller is notified the same way as
-   step 3's decline). If the seller's `on_init` matched the original bid
-   exactly, this step is skipped — `confirm` fires automatically, exactly
-   as a plain accept always has.
-5. Once confirmed, seller auto-sends `on_confirm` on receiving `confirm`.
-   Both dashboards flip to **Active**, live.
-6. **Seller**: the active trade shows a **Report delivery & settle** form
-   prefilled with a suggested, editable meter reading (85%–105% of what was
-   agreed) — this is the seller's real smart-meter reading after physical
-   delivery, which real settlement always pays on. Submitting sends a real
-   `on_status` using whatever quantity was actually agreed (the counter
-   terms, if there was one). Both dashboards flip to **Settled**, live,
-   with the real computed ₹ amount.
+2. **Buyer** (`:4001`): click **Discover offers** (a real `discover` —
+   allow 5–20 seconds for real network propagation across the shared
+   catalog, not instant), or paste the offer id directly into "Buy
+   directly." The bid price is prefilled with the seller's ask but
+   editable — leave it to buy outright, lower it to negotiate. Click
+   **Send bid** — a real, signed `init`.
+3. **Seller**: the bid appears in "Incoming requests" against the seller's
+   own current ask. Three real outcomes: **Accept bid** (real `on_init`
+   echoing the buyer's terms), **Send counter-offer** (real `on_init` with
+   the seller's own price/quantity instead), or **Decline** (no onix call
+   at all — a BPP never answering `init` is valid Beckn behavior; the
+   buyer is told via a small app-to-app notification endpoint).
+4. If countered, the buyer sees **Accept counter** (real `confirm`) or
+   **Decline counter**. If the seller's `on_init` matched the original bid
+   exactly, `confirm` fires automatically — no extra step.
+5. Seller auto-sends `on_confirm` on receiving `confirm`. Both dashboards
+   flip to **Active**, live.
+6. **Seller**: the active trade shows **Report delivery & settle**,
+   prefilled with a suggested, editable meter reading. Submitting sends a
+   real `on_status`. Both dashboards flip to **Settled** with the real
+   computed ₹ amount.
 7. **The rejected path**: on the buyer's form, set "Trade as" to
-   **Blocked discom** before bidding. The real `contractpolicyenforcer`
-   step on `onix-sellerapp` NACKs it live, with the real, specific,
-   human-readable policy violation message — not a canned error.
+   **Blocked discom** before bidding — the real `contractpolicyenforcer`
+   step on `onix-sellerapp` NACKs it live with a real, specific,
+   human-readable policy violation message.
 8. **Full protocol trace**: any trade row's **Show trace** toggle expands
-   every real Beckn hop logged for that transaction (`init`, `on_init`,
-   `confirm`, `on_confirm`, `on_status`, plus any decline) with its
-   direction, timestamp, and the actual raw payload sent or received —
-   nothing simulated, each row is written at the moment the real
-   send/receive happened.
-9. **Filters**: the buyer's discovered-offers list has live price/quantity
-   range filters, a sort dropdown, and an "only buyable" toggle — purely
-   client-side narrowing of what `/api/offers` already returns.
+   every real Beckn hop logged for that transaction, with direction,
+   timestamp, and the actual raw payload.
 
-## Honesty notes (read before demoing)
+### B. Demand-first aggregation — grid ↔ aggregator ↔ pooled sellers
 
-- **Discover is best-effort.** The real shared discovery service
-  (`34.93.165.42.sslip.io`) is a different real backend than the one
-  `catalog/publish` hits (`fabric.nfh.global`) — a quirk already flagged
-  in Grid Pulse. In testing, a `discover` call gets accepted by onix but
-  no `catalog` callback reliably arrives. "Buy directly" (typing the offer
-  id) is the reliable path — this mirrors how the original scripted demo
-  worked too (`discover` and the trade steps were always independent
-  workflows, never actually chained).
-- **Settlement math is computed twice, deliberately.** The real
-  `contractpolicyenforcer` plugin on `onix-sellerapp` independently
-  evaluates the linked `.rego` policy against whatever `on_status` payload
-  it receives. This app also computes the same `FINAL_ALLOC × PRICE_PER_KWH`
-  formula itself, purely so the seller's own UI has an amount to display
-  immediately (the real settlement flow has no callback *to* the seller
-  after it sends `on_status` — there'd be nothing to display otherwise).
-  Both use the identical, already-verified formula.
-- **Two real bugs were caught by the real system while building this**,
-  not invented for effect: an `init` message needs `AVAILABLE_QTY`
-  declared in `payloadDescriptors`, and `SettlementTerm`'s real schema
-  lives at `.../SettlementTerm/v2.0/attributes.yaml` — the devkit's own
-  example fixture omits the `v`. Both are fixed in `beckn.js` on each
-  side.
+This is the realistic shape real demand-response/flexibility markets use
+(FERC Order 2222, UK's Piclo Flex): the large buyer states what it needs
+*before* anything is pooled, rather than pooling first and hoping a buyer
+shows up. See `KNOWLEDGE-BASE.md` §9 for the full design and every bug
+found building it.
+
+1. **Seller** (`:4002`): publish a few small offers (as above).
+2. **Grid/DISCOM** (`:4004`): post a requirement — quantity + a max
+   price/kWh.
+3. **Aggregator** (`:4003`): click **Discover offers** (same real
+   propagation delay as above), then **Recommend pool** on the posted
+   requirement — a real cheapest-first match against currently-discovered
+   offers, capped at the requirement's own price ceiling. It's honest
+   about a shortfall rather than hiding one. **Apply recommendation to
+   pool**, then **Publish pooled block** — mints a brand-new catalog entry
+   under the aggregator's own onix identity (`onix-aggregatorapp`), not
+   seller-app's.
+4. **Grid/DISCOM**: once the requirement shows `PUBLISHED`, click **Buy
+   available energy** — a real, signed `init`→`confirm` sent through
+   `onix-gridapp`, grid-app's own onix identity (reusing buyer-app's
+   registered keys, routed separately — see §9's Phase 2). This is a
+   genuinely different real buyer from buyer-app; buyer-app has no special
+   role in this flow and could independently buy the same public block
+   too (whoever confirms first gets it).
+5. **Aggregator**: once the trade is `Active`, enter a delivered-kWh
+   reading and **Report delivery** — a real `on_status`, settled, with the
+   proceeds split back to each pooled seller at their own original price
+   and the aggregator's real margin shown explicitly (click any seller row
+   to expand the full calculation).
+6. **A requirement doesn't have to be filled by one block.** If what's
+   currently pooled is less than the requirement asks for, publishing
+   anyway is allowed — grid-app buys what's available, honestly reports
+   the remaining shortfall, and the requirement stays open. When a new
+   seller's offer shows up later (even just one), **Recommend pool** is
+   still available on that same requirement to top it up; it flips to
+   `FULFILLED` once the cumulative bought quantity meets the original ask.
+
+## Sharing dashboards externally
+
+Each app is a plain `localhost` HTTP server — to let someone else reach
+one, tunnel it (e.g. `cloudflared tunnel --url http://localhost:4002`) and
+share the printed URL. Buyer-app's real `discover` additionally needs a
+public address for the shared discovery service's async reply to land on;
+if tunneling `onix-buyerapp`'s own port (not the dashboard's), write that
+tunnel's URL into `buyer-app/public-bap-uri.txt` *before* starting
+buyer-app (it's read once at startup).
 
 ## Resetting between demo runs
 
-Stop both `npm start` processes, then delete the SQLite files:
+Every app exposes its own `POST /api/reset`, wiping just that app's own
+SQLite tables:
 ```bash
-rm seller-app/seller-app.db* buyer-app/buyer-app.db*
+curl -X POST http://localhost:4002/api/reset   # seller-app
+curl -X POST http://localhost:4001/api/reset   # buyer-app
+curl -X POST http://localhost:4003/api/reset   # aggregator-app
+curl -X POST http://localhost:4004/api/reset   # grid-app
 ```
-Restart — both dashboards come up empty.
+Dashboards update live (or on next poll) to show an empty state — no
+restart needed. Resetting one app never resets another; reset all four
+for a genuinely clean demo run.
+
+## Honesty notes (read before demoing)
+
+- **Discover takes real time.** The shared catalog is a real, multi-tenant
+  network — a fresh `publish` can take anywhere from a few seconds up to
+  ~20 seconds to actually propagate to a `discover` caller. This is real
+  network behavior, not a bug to route around; if a discover comes back
+  empty, wait and click it again rather than assuming something's broken.
+- **Known, disclosed simplifications** — not hidden, not silently wrong:
+  aggregator-app's own `GET /api/about` lists every one live (reused
+  signing identities instead of new DeDi registration, cheapest-first
+  greedy matching rather than a true optimizer, proportional disaggregation
+  rather than per-member smart meters, and more) — also written out in
+  full in `KNOWLEDGE-BASE.md` §9.
+- **Settlement math is computed independently in more than one place by
+  design.** The real `contractpolicyenforcer` plugin evaluates the linked
+  `.rego` policy against whatever `on_status` payload it receives; each
+  app also computes the identical formula itself so its own UI has an
+  amount to show immediately, since there's no callback *back* to the
+  sender after it sends `on_status`.
+- **Several real bugs were caught by actually using this system**, not
+  invented for effect — every one of them, what broke, and exactly how
+  it was fixed is written up in `KNOWLEDGE-BASE.md` (§5, §9, and the
+  Aggregation v2 / Phase 2 sections in particular).
