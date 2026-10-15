@@ -73,6 +73,8 @@
   .filters label.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
   .role-banner { background: rgba(90,169,255,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); max-width: 960px; margin: 16px auto 0; }
   .role-banner b { color: var(--text); }
+  .role-banner-line { margin: 0 0 8px; }
+  .role-banner-line:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -85,7 +87,8 @@
   </div>
 </header>
 <div class="role-banner">
-  <b>Your role:</b> the buyer. <b>Your job:</b> discover offers and buy what you want. You never know, and never need to know, whether what you bought was one individual seller's own small offer or an aggregator's pooled block of several sellers — they look and behave identically to you. Once you buy, your only remaining interaction is with whoever published it (the seller, or the aggregator wearing the seller's identity) through Accept → Confirm → Delivery → Settlement, exactly the same either way.
+  <div class="role-banner-line"><b>Your role:</b> a bulk buyer — comparing real offers on the shared network and choosing whichever fits the quantity and price you actually need.</div>
+  <div class="role-banner-line"><b>Your job:</b> discover offers and buy what fits. A listing tagged <span class="tag" style="color:var(--amber)">pooled block</span> below is several small sellers' offers combined into one larger, independent catalog entry by an aggregator — worth choosing over several individual sellers when you want more energy in one transaction than any single small offer has alone. You don't have to tell them apart to buy correctly (both work identically — discover → buy → Accept → Confirm → Delivery → Settlement), but the tag is there if you want to know what you're actually buying.</div>
 </div>
 <main>
   <div class="panel">
@@ -349,7 +352,7 @@ function renderOffers(list) {
     <div class="row-block">
       <div class="top">
         <div class="meta">
-          <div class="primary">${o.name ? o.name + " — " : ""}<span style="font-family:monospace">${o.offer_id}</span>${isOwn ? ' <span class="tag" style="color:var(--accent)">ours, live now</span>' : ""}${meta.type && meta.type !== "EnergyTradeOffer" ? ` <span class="tag">@type: ${meta.type}</span>` : ""}</div>
+          <div class="primary">${o.name ? o.name + " — " : ""}<span style="font-family:monospace">${o.offer_id}</span>${isOwn ? ' <span class="tag" style="color:var(--accent)">ours, live now</span>' : ""}${o.bpp_uri && o.bpp_uri.includes("aggregatorapp.example.com") ? ' <span class="tag" style="color:var(--amber)">pooled block — several sellers combined</span>' : ""}${meta.type && meta.type !== "EnergyTradeOffer" ? ` <span class="tag">@type: ${meta.type}</span>` : ""}</div>
           <div class="secondary">${o.available_qty ?? "?"} kWh @ ₹${o.price_per_kwh ?? "?"}/kWh · seller: ${o.seller_id} · last confirmed live ${timeAgo(o.discovered_at)}</div>
           ${bornLine}
           ${validityLine}

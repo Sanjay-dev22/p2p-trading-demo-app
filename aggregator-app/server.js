@@ -451,6 +451,9 @@ app.post("/api/deliver/:transactionId", async (req, res) => {
 });
 
 // ---------- Blocks list + disaggregation ----------
+// Full breakdown, not just the final numbers — every figure a reader would
+// need to verify "where did the aggregator's margin actually come from"
+// by hand, same transparency standard as seller-app's own settlement math.
 function disaggregate(block, members, trade) {
   const finalAlloc = trade?.final_alloc ?? null;
   const settlementAmount = trade?.settlement_amount ?? null;
@@ -458,17 +461,33 @@ function disaggregate(block, members, trade) {
   if (finalAlloc == null || settlementAmount == null || status !== "SETTLED") {
     return { status, finalAlloc, settlementAmount, memberPayouts: null, aggregatorMargin: null };
   }
+  const requestedQty = trade.requested_qty;
+  const pricePerKwh = trade.price_per_kwh;
+  const bulk = computeSettlement({ requestedQty, finalAlloc, pricePerKwh });
   const deliveryRatio = block.total_quantity_kwh > 0 ? finalAlloc / block.total_quantity_kwh : 0;
   const memberPayouts = members.map((m) => {
     const delivered = round2(m.enrolled_qty * deliveryRatio);
     const gross = round2(delivered * m.price_per_kwh);
     const wheeling = round2(delivered * WHEELING_CHARGE_SELLER_PER_KWH);
     const net = round2(gross - wheeling);
-    return { offerId: m.offer_id, sellerId: m.seller_id, originalPricePerKwh: m.price_per_kwh, enrolledQty: m.enrolled_qty, deliveredShare: delivered, net };
+    return { offerId: m.offer_id, sellerId: m.seller_id, originalPricePerKwh: m.price_per_kwh, enrolledQty: m.enrolled_qty, deliveredShare: delivered, gross, wheeling, net };
   });
   const sumMemberNet = round2(memberPayouts.reduce((s, m) => s + m.net, 0));
   const aggregatorMargin = round2(settlementAmount - sumMemberNet);
-  return { status, finalAlloc, settlementAmount, deliveryRatio: round2(deliveryRatio), memberPayouts, sumMemberNet, aggregatorMargin };
+  // What the margin was *supposed* to be (quantity published × the margin
+  // rate set at publish time) vs what it actually came out to — they
+  // diverge whenever there's a delivery shortfall, because the penalty and
+  // the buyer/seller wheeling asymmetry eat into the realized margin in a
+  // way the flat per-kWh rate never accounted for (see KNOWLEDGE-BASE.md
+  // §9 risk #2 — this is that gap, shown numerically rather than just
+  // asserted).
+  const intendedMargin = round2(block.margin_per_kwh * block.total_quantity_kwh);
+  return {
+    status, finalAlloc, settlementAmount, deliveryRatio: round2(deliveryRatio), memberPayouts, sumMemberNet, aggregatorMargin,
+    requestedQty, pricePerKwh, shortfallKwh: bulk.shortfallKwh, tradeValue: bulk.tradeValue,
+    wheelingSellerTotal: bulk.wheelingSeller, wheelingBuyerTotal: bulk.wheelingBuyer, penalty: bulk.penalty,
+    buyerPayable: bulk.buyerPayable, intendedMargin,
+  };
 }
 
 function latestTradeForBlock(blockId) {

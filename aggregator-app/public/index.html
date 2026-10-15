@@ -48,6 +48,10 @@
   table.payout th, table.payout td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
   table.payout th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
   table.payout tfoot td { font-weight: 700; border-top: 2px solid var(--border); border-bottom: none; }
+  table.payout tr.payout-row:hover { background: rgba(192,127,42,0.08); }
+  table.payout tr.payout-detail-row td { border-bottom: 1px solid var(--border); padding: 4px 8px 12px; }
+  .payout-detail { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: 12px; color: var(--muted); line-height: 1.8; }
+  .payout-detail b { color: var(--text); }
   .simplifications { font-size: 12px; color: var(--muted); line-height: 1.6; }
   .simplifications li { margin-bottom: 4px; }
   .role-banner { background: rgba(192,127,42,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); margin: 0 0 20px; }
@@ -146,6 +150,33 @@ async function loadAvailable() {
     </div>`).join("");
 }
 
+// Recommendations are cached client-side and re-painted after every
+// loadRequirements() refresh — found during live use: loadRequirements()
+// is polled every 5s and rebuilds #requirementsList's innerHTML from
+// scratch, which was silently wiping out a just-shown recommendation (and
+// its "Apply" button) before there was time to read it or click it. The
+// requirement itself doesn't disappear — only its recommendation result
+// needs to survive the next poll.
+const recommendationCache = {};
+
+function renderRecommendationResult(id) {
+  const el = $(`#req-result-${id}`);
+  const result = recommendationCache[id];
+  if (!el || !result) return;
+  el.innerHTML = `
+    <div style="margin-top:10px; font-size:13px;">
+      <div class="secondary" style="margin-bottom:6px;">${result.note}</div>
+      <div class="list">
+        ${result.picked.map((p) => `<div class="row"><div class="secondary">${p.offerId} · ${p.sellerId} · ₹${p.pricePerKwh}/kWh · taking ${p.takeQty} kWh</div></div>`).join("") || `<div class="empty">No currently-available offers fit the price ceiling.</div>`}
+      </div>
+      ${result.picked.length ? (
+        result.applied
+          ? `<div class="secondary" style="margin-top:8px; color:var(--good);">✓ Applied to the pool below — review it, then publish.</div>`
+          : `<button style="margin-top:8px;" onclick="applyRecommendation('${id}')">Apply recommendation to pool</button>`
+      ) : ""}
+    </div>`;
+}
+
 async function loadRequirements() {
   const reqs = await api("/api/requirements");
   const el = $("#requirementsList");
@@ -164,29 +195,30 @@ async function loadRequirements() {
       </div>
       <div id="req-result-${r.id}"></div>
     </div>`).join("");
+  // Re-paint any recommendation this refresh just wiped from the DOM.
+  for (const r of reqs) {
+    if (r.status !== "PUBLISHED" && recommendationCache[r.id]) renderRecommendationResult(r.id);
+  }
 }
 
 async function recommend(id) {
   try {
     const result = await api(`/api/requirements/${id}/recommend`, { method: "POST" });
-    const el = $(`#req-result-${id}`);
-    el.innerHTML = `
-      <div style="margin-top:10px; font-size:13px;">
-        <div class="secondary" style="margin-bottom:6px;">${result.note}</div>
-        <div class="list">
-          ${result.picked.map((p) => `<div class="row"><div class="secondary">${p.offerId} · ${p.sellerId} · ₹${p.pricePerKwh}/kWh · taking ${p.takeQty} kWh</div></div>`).join("") || `<div class="empty">No currently-available offers fit the price ceiling.</div>`}
-        </div>
-        ${result.picked.length ? `<button style="margin-top:8px;" onclick='applyRecommendation(${JSON.stringify(result.picked).replace(/'/g, "&#39;")}, "${id}")'>Apply recommendation to pool</button>` : ""}
-      </div>`;
+    recommendationCache[id] = result;
+    renderRecommendationResult(id);
   } catch (e) { toast(`Failed: ${e.message}`); }
 }
 
-async function applyRecommendation(picked, requirementId) {
+async function applyRecommendation(requirementId) {
+  const result = recommendationCache[requirementId];
+  if (!result) return;
   try {
-    for (const p of picked) {
+    for (const p of result.picked) {
       await api("/api/pool/enroll", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId: p.offerId, sellerId: p.sellerId, pricePerKwh: p.pricePerKwh, qty: p.takeQty }) });
     }
     pendingRequirementId = requirementId;
+    result.applied = true;
+    renderRecommendationResult(requirementId);
     toast("Recommendation applied — review the pool below, then publish");
     await Promise.all([loadAvailable(), loadPool()]);
   } catch (e) { toast(`Failed to apply: ${e.message}`); }
@@ -243,16 +275,35 @@ async function loadBlocks() {
     }
     let payoutHtml = "";
     if (settled && d.memberPayouts) {
+      const marginDiffers = Math.abs(d.aggregatorMargin - d.intendedMargin) > 0.005;
       payoutHtml = `
+        <div class="secondary" style="margin-top:10px;">Delivered ${d.finalAlloc} of ${d.requestedQty} kWh requested${d.shortfallKwh > 0 ? ` — <span style="color:var(--red)">${d.shortfallKwh} kWh shortfall</span>` : ""} · settlement price ₹${d.pricePerKwh}/kWh · click a seller row for the full calculation</div>
         <table class="payout">
-          <thead><tr><th>Seller</th><th>Own price</th><th>Delivered share</th><th>Net payout</th></tr></thead>
+          <thead><tr><th>Seller</th><th>Own price</th><th>Delivered share</th><th>Net payout</th><th></th></tr></thead>
           <tbody>
-            ${d.memberPayouts.map((m) => `<tr><td>${m.sellerId} (${m.offerId})</td><td>₹${m.originalPricePerKwh}/kWh</td><td>${m.deliveredShare} kWh</td><td>${money(m.net)}</td></tr>`).join("")}
+            ${d.memberPayouts.map((m, i) => `
+              <tr class="payout-row" onclick="toggleDetail('${b.id}-${i}')">
+                <td>${m.sellerId} (${m.offerId})</td><td>₹${m.originalPricePerKwh}/kWh</td><td>${m.deliveredShare} kWh</td><td>${money(m.net)}</td><td class="secondary">▸ details</td>
+              </tr>
+              <tr id="detail-${b.id}-${i}" class="payout-detail-row" style="display:none;">
+                <td colspan="5">
+                  <div class="payout-detail">
+                    ${m.enrolledQty} kWh enrolled × ${(d.deliveryRatio * 100).toFixed(1)}% delivery ratio = <b>${m.deliveredShare} kWh</b> delivered<br/>
+                    Gross: ${m.deliveredShare} kWh × ₹${m.originalPricePerKwh}/kWh = ${money(m.gross)}<br/>
+                    − Seller-side wheeling: ${m.deliveredShare} kWh × ₹0.50/kWh = ${money(m.wheeling)}<br/>
+                    = <b>Net payout: ${money(m.net)}</b>
+                  </div>
+                </td>
+              </tr>`).join("")}
           </tbody>
           <tfoot>
-            <tr><td colspan="3">Bulk buyer paid</td><td>${money(d.settlementAmount)}</td></tr>
-            <tr><td colspan="3">Sum to pooled sellers</td><td>${money(d.sumMemberNet)}</td></tr>
-            <tr><td colspan="3">Aggregator margin + handling</td><td>${money(d.aggregatorMargin)}</td></tr>
+            <tr><td colspan="4">Bulk buyer paid</td><td>${money(d.buyerPayable)}</td></tr>
+            <tr><td colspan="4" class="secondary" style="font-weight:400;">↳ energy ${money(d.tradeValue)} + buyer-side wheeling ${money(d.wheelingBuyerTotal)}</td><td></td></tr>
+            <tr><td colspan="4">Aggregator received (as the publishing seller)</td><td>${money(d.settlementAmount)}</td></tr>
+            <tr><td colspan="4" class="secondary" style="font-weight:400;">↳ energy ${money(d.tradeValue)} − seller-side wheeling ${money(d.wheelingSellerTotal)}${d.penalty > 0 ? ` − shortfall penalty ${money(d.penalty)}` : ""}</td><td></td></tr>
+            <tr><td colspan="4">Sum paid out to pooled sellers</td><td>${money(d.sumMemberNet)}</td></tr>
+            <tr><td colspan="4"><b>Aggregator margin (received − paid out)</b></td><td><b>${money(d.aggregatorMargin)}</b></td></tr>
+            ${marginDiffers ? `<tr><td colspan="4" class="secondary" style="font-weight:400;">Intended margin at publish time was ${money(d.intendedMargin)} (₹${b.margin_per_kwh}/kWh × ${b.total_quantity_kwh} kWh) — the ${d.shortfallKwh} kWh shortfall above (and the buyer/seller wheeling asymmetry) is why the realized margin differs.</td><td></td></tr>` : ""}
           </tfoot>
         </table>`;
     }
@@ -287,6 +338,11 @@ $("#publishForm").onsubmit = async (e) => {
   } catch (e2) { toast(`Failed: ${e2.message}`); }
 };
 
+function toggleDetail(key) {
+  const row = document.getElementById(`detail-${key}`);
+  if (row) row.style.display = row.style.display === "none" ? "" : "none";
+}
+
 async function suggestDelivery(transactionId) {
   const { suggestedFinalAlloc } = await api(`/api/deliver/${transactionId}/suggest`);
   $(`#final-${transactionId}`).value = suggestedFinalAlloc;
@@ -311,7 +367,7 @@ function connectWs() {
     if (type === "pool_updated") loadPool();
     if (type === "block_published") { loadBlocks(); loadPool(); loadRequirements(); }
     if (type === "requirement_posted") loadRequirements();
-    if (type === "reset") { loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }
+    if (type === "reset") { Object.keys(recommendationCache).forEach((k) => delete recommendationCache[k]); loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }
   };
 }
 

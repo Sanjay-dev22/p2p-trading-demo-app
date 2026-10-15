@@ -200,10 +200,19 @@ app.get("/api/resolve-offer/:offerId", async (req, res) => {
 // the real check server-side so the browser never needs cross-origin
 // access to the Seller Platform (which may be on an entirely different
 // tunnel domain during the real demo).
+// aggregation-v2: a pooled block is just as genuinely "ours to buy" as a
+// seller-app offer (it's real, live, tradeable), but it lives on
+// aggregator-app's own catalog now, never seller-app's — this used to only
+// check seller-app, which silently turned every aggregated block into a
+// permanent "view only" card no matter how live it actually was. Checking
+// both, same real-catalog-membership test as resolveOffer() already uses.
 app.get("/api/my-offers", async (req, res) => {
   try {
-    const sellerOffers = await fetch(`${SELLER_APP_URL}/api/offers`).then((r) => (r.ok ? r.json() : []));
-    res.json({ ok: true, offerIds: sellerOffers.map((o) => o.id) });
+    const [sellerOffers, aggOffers] = await Promise.all([
+      fetch(`${SELLER_APP_URL}/api/offers`).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+      fetch(`${AGGREGATOR_APP_URL}/api/offers`).then((r) => (r.ok ? r.json() : [])).catch(() => []),
+    ]);
+    res.json({ ok: true, offerIds: [...sellerOffers.map((o) => o.id), ...aggOffers.map((o) => o.id)] });
   } catch (err) {
     res.json({ ok: false, offerIds: [], error: String(err.message || err) });
   }
