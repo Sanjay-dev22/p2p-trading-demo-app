@@ -1,7 +1,7 @@
 {
   "name": "p2p-trading-grid-app",
   "version": "1.0.0",
-  "description": "Grid/DISCOM demand-side dashboard — posts bulk energy requirements for aggregator-app to match and fulfill. REST-only, no onix/beckn identity of its own in this phase (see KNOWLEDGE-BASE.md's aggregation-v2 section).",
+  "description": "Grid/DISCOM demand-side dashboard — posts bulk energy requirements for aggregator-app to match and fulfill, and buys the resulting block itself via its own onix/beckn identity (Aggregation v2 Phase 2 — see KNOWLEDGE-BASE.md §9).",
   "private": true,
   "type": "commonjs",
   "main": "server.js",

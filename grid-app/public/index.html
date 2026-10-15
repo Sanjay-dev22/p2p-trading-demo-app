@@ -30,6 +30,10 @@
   .badge.published { background: rgba(47,224,198,0.25); color: var(--good); }
   .badge.recommended { background: rgba(166,124,240,0.2); color: var(--accent); }
   .badge.pending { background: rgba(143,161,189,0.15); color: var(--muted); }
+  .badge.fulfilled { background: rgba(47,224,198,0.25); color: var(--good); }
+  .badge.active { background: rgba(166,124,240,0.2); color: var(--accent); }
+  .badge.settled { background: rgba(47,224,198,0.25); color: var(--good); }
+  .badge.rejected { background: rgba(255,107,107,0.2); color: var(--red); }
   .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
   .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--accent); color: var(--text); padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transform: translateY(8px); transition: all 0.25s; pointer-events: none; }
   .toast.show { opacity: 1; transform: translateY(0); }
@@ -51,8 +55,8 @@
 
   <div class="role-banner">
     <div class="role-banner-line"><b>Your role:</b> a grid operator / DISCOM representing bulk demand — the entity aggregation exists to serve.</div>
-    <div class="role-banner-line"><b>Your job:</b> post a requirement (how much energy you need, and the most you'll pay per kWh) and watch aggregator-app match and fulfill it.</div>
-    <div class="role-banner-line"><b>What you don't do (in this phase):</b> you don't execute the actual purchase yourself — buyer-app does that against the block aggregator-app publishes once it has matched your requirement. See KNOWLEDGE-BASE.md's aggregation-v2 section for why, and what a later phase giving you that directly would look like.</div>
+    <div class="role-banner-line"><b>Your job:</b> post a requirement (how much energy you need, and the most you'll pay per kWh), then buy the block aggregator-app publishes to fulfill it — yourself, with your own real Beckn identity (reusing buyer-app's already-registered keys, a new routing address — see KNOWLEDGE-BASE.md §9's Phase 2).</div>
+    <div class="role-banner-line"><b>Note:</b> buyer-app is a separate, independent bulk buyer with no special awareness of your requirements — it can see and buy the same public block too. Whoever confirms first gets it; if that's buyer-app, your requirement stays unfulfilled until a fresh pool is recommended.</div>
   </div>
 
   <div class="panel">
@@ -68,6 +72,12 @@
   <div class="panel">
     <h2>Your requirements</h2>
     <div class="list" id="reqList"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Your trades</h2>
+    <p class="hint">Real, signed init → confirm → settle against whichever block fulfilled a requirement above — executed with grid-app's own onix identity, not buyer-app's.</p>
+    <div class="list" id="tradeList"></div>
   </div>
 
 </main>
@@ -87,20 +97,65 @@ async function api(path, opts) {
 function badgeClass(status) {
   if (status === "PUBLISHED") return "published";
   if (status === "RECOMMENDED") return "recommended";
+  if (status === "FULFILLED") return "fulfilled";
   return "pending";
 }
+
+function tradeBadgeClass(status) {
+  if (status === "SETTLED") return "settled";
+  if (status === "ACTIVE") return "active";
+  if (status === "REJECTED") return "rejected";
+  return "pending";
+}
+
+let tradesByRequirement = {};
 
 async function loadRequirements() {
   const reqs = await api("/api/requirements");
   const el = $("#reqList");
   if (!reqs.length) { el.innerHTML = `<div class="empty">No requirements posted yet.</div>`; return; }
-  el.innerHTML = reqs.map((r) => `
+  el.innerHTML = reqs.map((r) => {
+    const trade = tradesByRequirement[r.id];
+    const canBuy = r.status === "PUBLISHED" && r.block_id && !trade;
+    return `
     <div class="row">
       <div class="meta">
         <div class="primary">${r.id}</div>
         <div class="secondary">${r.quantity_kwh} kWh needed · ceiling ₹${r.max_price_per_kwh}/kWh${r.block_id ? ` · fulfilled by block ${r.block_id}` : ""}</div>
       </div>
       <span class="badge ${badgeClass(r.status)}">${r.status}</span>
+      ${canBuy ? `<button data-buy="${r.id}">Buy this block</button>` : ""}
+    </div>`;
+  }).join("");
+  el.querySelectorAll("button[data-buy]").forEach((btn) => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await api(`/api/requirements/${btn.dataset.buy}/buy`, { method: "POST" });
+        toast("Init sent — buying with grid-app's own onix identity");
+        await loadTrades();
+        await loadRequirements();
+      } catch (err) {
+        toast(`Buy failed: ${err.message}`);
+        btn.disabled = false;
+      }
+    };
+  });
+}
+
+async function loadTrades() {
+  const trades = await api("/api/trades");
+  tradesByRequirement = {};
+  trades.forEach((t) => { tradesByRequirement[t.requirementId] = t; });
+  const el = $("#tradeList");
+  if (!trades.length) { el.innerHTML = `<div class="empty">No trades yet.</div>`; return; }
+  el.innerHTML = trades.map((t) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary">${t.offerId} <span style="color:var(--muted); font-weight:400;">for ${t.requirementId}</span></div>
+        <div class="secondary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh${t.settlementAmount != null ? ` · settled ₹${t.settlementAmount.toFixed(2)}` : ""}</div>
+      </div>
+      <span class="badge ${tradeBadgeClass(t.status)}">${t.status}</span>
     </div>`).join("");
 }
 
@@ -116,8 +171,13 @@ $("#postForm").onsubmit = async (e) => {
   } catch (err) { toast(`Failed: ${err.message}`); }
 };
 
-setInterval(loadRequirements, 4000);
-loadRequirements();
+async function refresh() {
+  await loadTrades();
+  await loadRequirements();
+}
+
+setInterval(refresh, 4000);
+refresh();
 </script>
 </body>
 </html>

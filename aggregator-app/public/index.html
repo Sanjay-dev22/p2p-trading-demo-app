@@ -189,15 +189,15 @@ async function loadRequirements() {
           <div class="secondary">${r.quantity_kwh} kWh requested · ceiling ₹${r.max_price_per_kwh}/kWh</div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
-          <span class="badge ${r.status === "PUBLISHED" ? "settled" : "waiting"}">${r.status}</span>
-          ${r.status !== "PUBLISHED" ? `<button class="secondary" onclick="recommend('${r.id}')">Recommend pool</button>` : ""}
+          <span class="badge ${r.status === "PUBLISHED" || r.status === "FULFILLED" ? "settled" : "waiting"}">${r.status}</span>
+          ${r.status === "PENDING" || r.status === "RECOMMENDED" ? `<button class="secondary" onclick="recommend('${r.id}')">Recommend pool</button>` : ""}
         </div>
       </div>
       <div id="req-result-${r.id}"></div>
     </div>`).join("");
   // Re-paint any recommendation this refresh just wiped from the DOM.
   for (const r of reqs) {
-    if (r.status !== "PUBLISHED" && recommendationCache[r.id]) renderRecommendationResult(r.id);
+    if ((r.status === "PENDING" || r.status === "RECOMMENDED") && recommendationCache[r.id]) renderRecommendationResult(r.id);
   }
 }
 

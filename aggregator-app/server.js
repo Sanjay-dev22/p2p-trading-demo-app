@@ -108,7 +108,7 @@ app.get("/api/about", (req, res) => {
       "Incoming requirements are matched with a simple cheapest-first greedy fill up to the requested quantity (capped by the price ceiling), not a true constrained optimization.",
       "Pools once, at publish time — no re-aggregation as individual sellers' availability changes mid-window.",
       "Disaggregates the block's one real delivered-quantity reading proportionally across members (no per-member smart meter in this demo) — a real deployment would use each member's own real meter reading, per the 'virtual meter' reconciliation approach the real IES implementation guide describes.",
-      "Grid/DISCOM (grid-app) only posts a requirement — the real discover/buy/confirm for the resulting block is still executed by buyer-app. Giving Grid/DISCOM its own onix identity to buy directly is a clean later phase, not built here.",
+      "Grid/DISCOM (grid-app) now has its own onix identity and executes the real discover/buy/confirm itself (Phase 2) — reusing buyer-app's already-registered keys (buyerapp.example.com) rather than a newly-registered identity, the same no-new-DeDi-registration trick used for this app's own identity above. buyer-app remains a fully independent bulk buyer that can see and buy the same public block too — whoever confirms first gets it; the loser's requirement just stays unfulfilled until a fresh pool is recommended.",
     ],
   });
 });
@@ -365,6 +365,15 @@ app.post("/api/webhook/:action", async (req, res) => {
       }
 
       db.prepare("UPDATE blocks SET remaining_qty = remaining_qty - ? WHERE id=?").run(requestedQty, blockId);
+      // Close the demand-side loop regardless of *which* real buyer (grid-app
+      // or buyer-app) won this block — a requirement is fulfilled once the
+      // physical capacity it asked for is actually sold, not only when
+      // grid-app itself happens to be the buyer (see the disclosed race
+      // condition in KNOWLEDGE-BASE.md §9's Phase 2).
+      const afterBlock = db.prepare("SELECT remaining_qty FROM blocks WHERE id=?").get(blockId);
+      if (afterBlock && afterBlock.remaining_qty <= 0) {
+        db.prepare("UPDATE requirements SET status=? WHERE block_id=? AND status=?").run("FULFILLED", blockId, "PUBLISHED");
+      }
       const now = beckn.nowIso();
       db.prepare(
         `INSERT INTO trades (transaction_id, block_id, bap_id, buyer_discom, requested_qty, price_per_kwh, status, raw_context, created_at, updated_at)
