@@ -109,6 +109,15 @@ function tradeBadgeClass(status) {
 }
 
 let tradesByRequirement = {};
+// Requirement ids with a buy currently in flight — found live: the
+// independent 4s poll rebuilds #reqList's innerHTML from scratch regardless
+// of an in-progress click, so a freshly-rendered button starts re-enabled
+// even while the original request is still awaiting a real network round
+// trip. Without this, a double-click (or just unlucky timing with the next
+// poll tick) could send a second real `init` for the same requirement
+// before the first one's effect on fulfilled_qty is reflected -- an actual
+// double-buy, not merely a cosmetic glitch.
+let buyingInProgress = new Set();
 
 async function loadRequirements() {
   const reqs = await api("/api/requirements");
@@ -123,6 +132,7 @@ async function loadRequirements() {
     // trying again (fixed: it used to permanently hide this button after
     // the first purchase, even when the requirement was only partly met).
     const canBuy = r.status !== "FULFILLED";
+    const inFlight = buyingInProgress.has(r.id);
     return `
     <div class="row">
       <div class="meta">
@@ -130,21 +140,24 @@ async function loadRequirements() {
         <div class="secondary">${r.quantity_kwh} kWh needed · ceiling ₹${r.max_price_per_kwh}/kWh${progress}</div>
       </div>
       <span class="badge ${badgeClass(r.status)}">${r.status}</span>
-      ${canBuy ? `<button data-buy="${r.id}">Buy available energy</button>` : ""}
+      ${canBuy ? `<button data-buy="${r.id}" ${inFlight ? "disabled" : ""}>${inFlight ? "Buying…" : "Buy available energy"}</button>` : ""}
     </div>`;
   }).join("");
   el.querySelectorAll("button[data-buy]").forEach((btn) => {
     btn.onclick = async () => {
+      const requirementId = btn.dataset.buy;
+      buyingInProgress.add(requirementId);
       btn.disabled = true;
+      btn.textContent = "Buying…";
       try {
-        const result = await api(`/api/requirements/${btn.dataset.buy}/buy`, { method: "POST" });
+        const result = await api(`/api/requirements/${requirementId}/buy`, { method: "POST" });
         toast(result.note || `Bought from ${result.bought.length} block(s)`);
-        await loadTrades();
-        await loadRequirements();
       } catch (err) {
         toast(`Buy failed: ${err.message}`);
       } finally {
-        btn.disabled = false;
+        buyingInProgress.delete(requirementId);
+        await loadTrades();
+        await loadRequirements();
       }
     };
   });

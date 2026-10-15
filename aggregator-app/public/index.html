@@ -264,7 +264,23 @@ async function loadPool() {
   $("#btnPublish").disabled = members.length < 2;
 }
 
+// Expanded payout-detail rows (toggleDetail) and anything typed/suggested
+// into a "Delivered kWh reading" input are the two pieces of in-progress UI
+// state loadBlocks()'s full innerHTML rebuild would otherwise silently
+// wipe every 5s poll tick -- found live: a just-expanded detail row looked
+// like it "faded/collapsed on its own" within a few seconds, and a
+// just-suggested meter reading disappeared instantly, both for the exact
+// same reason (no memory of what the user had open or typed across a
+// rebuild) as the earlier recommendation-hiding bug this app already fixed
+// once for a different panel.
+let expandedDetails = new Set();
+
 async function loadBlocks() {
+  const pendingReadings = {};
+  document.querySelectorAll('input[id^="final-"]').forEach((input) => {
+    if (input.value) pendingReadings[input.id] = input.value;
+  });
+
   const blocks = await api("/api/blocks");
   const el = $("#blocksList");
   if (!blocks.length) { el.innerHTML = `<div class="empty">No blocks published yet.</div>`; return; }
@@ -330,6 +346,16 @@ async function loadBlocks() {
         ${payoutHtml}
       </div>`;
   }).join("");
+
+  // Re-apply what the rebuild above would otherwise have silently lost.
+  Object.entries(pendingReadings).forEach(([id, value]) => {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
+  });
+  expandedDetails.forEach((key) => {
+    const row = document.getElementById(`detail-${key}`);
+    if (row) row.style.display = "";
+  });
 }
 
 $("#btnDiscover").onclick = async () => {
@@ -350,7 +376,10 @@ $("#publishForm").onsubmit = async (e) => {
 
 function toggleDetail(key) {
   const row = document.getElementById(`detail-${key}`);
-  if (row) row.style.display = row.style.display === "none" ? "" : "none";
+  if (!row) return;
+  const opening = row.style.display === "none";
+  row.style.display = opening ? "" : "none";
+  if (opening) expandedDetails.add(key); else expandedDetails.delete(key);
 }
 
 async function suggestDelivery(transactionId) {
@@ -377,7 +406,7 @@ function connectWs() {
     if (type === "pool_updated") loadPool();
     if (type === "block_published") { loadBlocks(); loadPool(); loadRequirements(); }
     if (type === "requirement_posted") loadRequirements();
-    if (type === "reset") { Object.keys(recommendationCache).forEach((k) => delete recommendationCache[k]); loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }
+    if (type === "reset") { Object.keys(recommendationCache).forEach((k) => delete recommendationCache[k]); expandedDetails.clear(); loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }
   };
 }
 
