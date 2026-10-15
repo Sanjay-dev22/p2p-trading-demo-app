@@ -91,45 +91,94 @@ app.get("/api/trades", (req, res) => {
   res.json(db.prepare("SELECT * FROM trades ORDER BY created_at DESC").all().map(tradeRow));
 });
 
-// ---------- The real purchase: buy the block that fulfills our own requirement ----------
+// ---------- The real purchase: buy whatever's currently published that
+// fulfills our own requirement ----------
+// Found live, fixed here: a single requirement can now be served by more
+// than one block over time (aggregator-app may publish less than the full
+// ask if that's all that's currently pooled, then top up later once a new
+// seller's offer shows up) -- so this buys cheapest-first across EVERY
+// live block tied to the requirement, up to however much is still needed,
+// rather than assuming exactly one block exists and rejecting outright if
+// it's undersized. A second (or third) call after more is published simply
+// tops up the remainder; it is not blocked by an earlier trade existing.
 app.post("/api/requirements/:id/buy", async (req, res) => {
   try {
     const requirementId = req.params.id;
-    const existing = db.prepare("SELECT * FROM trades WHERE requirement_id=?").get(requirementId);
-    if (existing) return res.status(409).json({ error: `Requirement ${requirementId} already has a trade (${existing.status}) — ${existing.transaction_id}` });
 
     const reqResult = await getJson(`${AGGREGATOR_APP_URL}/api/requirements`);
     if (!reqResult.ok) return res.status(reqResult.status || 502).json({ error: extractError(reqResult) });
     const requirement = (reqResult.json || []).find((r) => r.id === requirementId);
     if (!requirement) return res.status(404).json({ error: `Requirement ${requirementId} not found` });
-    if (requirement.status !== "PUBLISHED" || !requirement.block_id) {
+
+    const alreadyBought = requirement.fulfilled_qty || 0;
+    const needed = Math.round((requirement.quantity_kwh - alreadyBought) * 100) / 100;
+    if (needed <= 0) {
+      return res.status(409).json({ error: `Requirement ${requirementId} is already fully bought (${alreadyBought} of ${requirement.quantity_kwh} kWh) — nothing left to buy.` });
+    }
+
+    const blocksResult = await getJson(`${AGGREGATOR_APP_URL}/api/requirements/${requirementId}/blocks`);
+    if (!blocksResult.ok) return res.status(blocksResult.status || 502).json({ error: extractError(blocksResult) });
+    const allBlocks = blocksResult.json || [];
+    if (!allBlocks.length) {
       return res.status(409).json({ error: `Requirement ${requirementId} has no published block yet (status: ${requirement.status})` });
     }
 
-    const offersResult = await getJson(`${AGGREGATOR_APP_URL}/api/offers`);
-    if (!offersResult.ok) return res.status(offersResult.status || 502).json({ error: extractError(offersResult) });
-    const block = (offersResult.json || []).find((o) => o.id === requirement.block_id);
-    if (!block) return res.status(409).json({ error: `Block ${requirement.block_id} is no longer live on aggregator-app's catalog` });
-    const remaining = block.remaining_qty ?? block.quantity_kwh;
-    if (remaining <= 0) return res.status(409).json({ error: `Block ${requirement.block_id} is fully sold — no capacity remains` });
-    if (requirement.quantity_kwh > remaining) {
-      return res.status(409).json({ error: `Only ${remaining} kWh remains on block ${requirement.block_id} — requirement needs ${requirement.quantity_kwh} kWh` });
+    // Belt-and-suspenders on the price ceiling: aggregator-app already
+    // refuses to publish a block whose price exceeds a linked requirement's
+    // ceiling (found live: the margin added on top of otherwise-compliant
+    // small-offer prices had been pushing it over, silently), but this
+    // re-checks right before spending real money anyway, same as every
+    // other buy-time re-validation in this demo.
+    const withinCeiling = allBlocks.filter((b) => (b.price_per_kwh ?? Infinity) <= requirement.max_price_per_kwh);
+    const overCeiling = allBlocks.filter((b) => (b.price_per_kwh ?? Infinity) > requirement.max_price_per_kwh);
+    const buyable = withinCeiling.filter((b) => (b.remaining_qty ?? b.quantity_kwh) > 0);
+    if (!buyable.length) {
+      const reason = overCeiling.length
+        ? `every published block for this requirement is priced above its own ₹${requirement.max_price_per_kwh}/kWh ceiling (cheapest is ₹${Math.min(...overCeiling.map((b) => b.price_per_kwh))}/kWh)`
+        : `no published block for this requirement currently has remaining capacity`;
+      return res.status(409).json({ error: `Nothing to buy for requirement ${requirementId} right now — ${reason}.` });
     }
 
-    const quantityKwh = Math.min(requirement.quantity_kwh, remaining);
-    const pricePerKwh = block.price_per_kwh;
-    const init = beckn.buildInit({ offerId: block.id, quantityKwh, pricePerKwh, bppId: beckn.SELLER_ID, bppUri: AGGREGATOR_BPP_URI });
-    const result = await beckn.postToOnix("/bap/caller/init", init);
-    if (!result.ok) return res.status(result.status || 502).json({ error: extractOnixError(result), detail: result.json });
+    // Cheapest-first, same greedy-fill spirit as aggregator-app's own
+    // recommend -- buys across as many blocks as it takes to cover what's
+    // still needed, one real signed init per block used.
+    buyable.sort((a, b) => a.price_per_kwh - b.price_per_kwh);
+    let qtyRemaining = needed;
+    const bought = [];
+    const failures = [];
+    for (const block of buyable) {
+      if (qtyRemaining <= 0.001) break;
+      const take = Math.round(Math.min(block.remaining_qty, qtyRemaining) * 100) / 100;
+      if (take <= 0) continue;
+      const init = beckn.buildInit({ offerId: block.id, quantityKwh: take, pricePerKwh: block.price_per_kwh, bppId: beckn.SELLER_ID, bppUri: AGGREGATOR_BPP_URI });
+      const result = await beckn.postToOnix("/bap/caller/init", init);
+      if (!result.ok) { failures.push(`${block.id}: ${extractOnixError(result)}`); continue; }
 
-    const now = beckn.nowIso();
-    db.prepare(
-      `INSERT INTO trades (transaction_id, requirement_id, offer_id, bpp_id, bpp_uri, requested_qty, price_per_kwh, status, raw_context, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-    ).run(init.context.transactionId, requirementId, block.id, beckn.SELLER_ID, AGGREGATOR_BPP_URI, quantityKwh, pricePerKwh, "PENDING", JSON.stringify(init), now, now);
-    logEvent(init.context.transactionId, "init", "sent", `Buying ${quantityKwh} kWh @ ₹${pricePerKwh}/kWh for requirement ${requirementId}`, init);
+      const now = beckn.nowIso();
+      db.prepare(
+        `INSERT INTO trades (transaction_id, requirement_id, offer_id, bpp_id, bpp_uri, requested_qty, price_per_kwh, status, raw_context, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+      ).run(init.context.transactionId, requirementId, block.id, beckn.SELLER_ID, AGGREGATOR_BPP_URI, take, block.price_per_kwh, "PENDING", JSON.stringify(init), now, now);
+      logEvent(init.context.transactionId, "init", "sent", `Buying ${take} kWh @ ₹${block.price_per_kwh}/kWh from block ${block.id} for requirement ${requirementId}`, init);
+      bought.push({ transactionId: init.context.transactionId, offerId: block.id, qty: take, pricePerKwh: block.price_per_kwh });
+      qtyRemaining = Math.round((qtyRemaining - take) * 100) / 100;
+    }
 
-    res.json({ ok: true, transactionId: init.context.transactionId, trade: tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(init.context.transactionId)) });
+    if (!bought.length) {
+      return res.status(502).json({ error: `All purchase attempts failed: ${failures.join("; ") || "unknown error"}` });
+    }
+
+    const shortfallQty = Math.max(0, qtyRemaining);
+    res.json({
+      ok: true,
+      bought,
+      boughtQty: Math.round((needed - shortfallQty) * 100) / 100,
+      shortfallQty,
+      note: shortfallQty > 0.001
+        ? `Bought ${Math.round((needed - shortfallQty) * 100) / 100} of the ${needed} kWh still needed from ${bought.length} block(s) — ${shortfallQty} kWh remains unmet; check back once more is published.`
+        : `Bought all ${needed} kWh still needed, from ${bought.length} block(s).`,
+      failures: failures.length ? failures : undefined,
+    });
   } catch (err) {
     console.error("requirements/:id/buy failed:", err);
     res.status(500).json({ error: String(err.message || err) });

@@ -115,28 +115,35 @@ async function loadRequirements() {
   const el = $("#reqList");
   if (!reqs.length) { el.innerHTML = `<div class="empty">No requirements posted yet.</div>`; return; }
   el.innerHTML = reqs.map((r) => {
-    const trade = tradesByRequirement[r.id];
-    const canBuy = r.status === "PUBLISHED" && r.block_id && !trade;
+    const bought = r.fulfilled_qty || 0;
+    const progress = bought > 0 ? ` · ${bought} of ${r.quantity_kwh} kWh bought so far` : "";
+    // Stays buyable for anything short of FULFILLED, even after an earlier
+    // purchase — a requirement can now be topped up from more than one
+    // published block over time, so a prior trade existing no longer blocks
+    // trying again (fixed: it used to permanently hide this button after
+    // the first purchase, even when the requirement was only partly met).
+    const canBuy = r.status !== "FULFILLED";
     return `
     <div class="row">
       <div class="meta">
         <div class="primary">${r.id}</div>
-        <div class="secondary">${r.quantity_kwh} kWh needed · ceiling ₹${r.max_price_per_kwh}/kWh${r.block_id ? ` · fulfilled by block ${r.block_id}` : ""}</div>
+        <div class="secondary">${r.quantity_kwh} kWh needed · ceiling ₹${r.max_price_per_kwh}/kWh${progress}</div>
       </div>
       <span class="badge ${badgeClass(r.status)}">${r.status}</span>
-      ${canBuy ? `<button data-buy="${r.id}">Buy this block</button>` : ""}
+      ${canBuy ? `<button data-buy="${r.id}">Buy available energy</button>` : ""}
     </div>`;
   }).join("");
   el.querySelectorAll("button[data-buy]").forEach((btn) => {
     btn.onclick = async () => {
       btn.disabled = true;
       try {
-        await api(`/api/requirements/${btn.dataset.buy}/buy`, { method: "POST" });
-        toast("Init sent — buying with grid-app's own onix identity");
+        const result = await api(`/api/requirements/${btn.dataset.buy}/buy`, { method: "POST" });
+        toast(result.note || `Bought from ${result.bought.length} block(s)`);
         await loadTrades();
         await loadRequirements();
       } catch (err) {
         toast(`Buy failed: ${err.message}`);
+      } finally {
         btn.disabled = false;
       }
     };
@@ -146,7 +153,7 @@ async function loadRequirements() {
 async function loadTrades() {
   const trades = await api("/api/trades");
   tradesByRequirement = {};
-  trades.forEach((t) => { tradesByRequirement[t.requirementId] = t; });
+  trades.forEach((t) => { (tradesByRequirement[t.requirementId] ||= []).push(t); });
   const el = $("#tradeList");
   if (!trades.length) { el.innerHTML = `<div class="empty">No trades yet.</div>`; return; }
   el.innerHTML = trades.map((t) => `

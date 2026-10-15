@@ -89,4 +89,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_events_block ON events(block_id);
 `);
 
+// Lightweight migration for tables created before a requirement could span
+// multiple blocks over time (see server.js's "a requirement is fulfilled
+// across however many blocks it takes" logic) — see seller-app/db.js for
+// why this pattern (no IF NOT EXISTS for columns in node:sqlite).
+for (const stmt of [
+  // Cumulative kWh actually bought (init-accepted) against this requirement,
+  // across however many blocks it took — the authoritative signal for
+  // flipping status to FULFILLED, replacing the old one-block-only check.
+  "ALTER TABLE requirements ADD COLUMN fulfilled_qty REAL DEFAULT 0",
+  // Which requirement (if any) this block was published to serve. A single
+  // requirement can now have more than one block over time (partial
+  // publish now, topped up later as new sellers appear), found via
+  // `SELECT * FROM blocks WHERE requirement_id = ?` rather than trusting
+  // requirements.block_id, which only ever points at the most recent one.
+  "ALTER TABLE blocks ADD COLUMN requirement_id TEXT",
+]) {
+  try { db.exec(stmt); } catch (_) { /* column already exists */ }
+}
+
 module.exports = db;

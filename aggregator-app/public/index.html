@@ -181,23 +181,33 @@ async function loadRequirements() {
   const reqs = await api("/api/requirements");
   const el = $("#requirementsList");
   if (!reqs.length) { el.innerHTML = `<div class="empty">No requirements posted yet — waiting on the Grid/DISCOM dashboard.</div>`; return; }
-  el.innerHTML = reqs.map((r) => `
+  el.innerHTML = reqs.map((r) => {
+    const bought = r.fulfilled_qty || 0;
+    const progress = bought > 0 ? ` · ${bought} of ${r.quantity_kwh} kWh bought so far` : "";
+    // "Recommend pool" stays available for anything short of FULFILLED —
+    // including an already-PUBLISHED requirement whose first block only
+    // partly covered it (a late-arriving seller's offer, found hours later,
+    // can now top it up instead of the requirement being permanently stuck
+    // once something smaller than the full ask got published against it).
+    const canRecommend = r.status !== "FULFILLED";
+    return `
     <div class="row" style="flex-direction:column; align-items:stretch;" id="req-${r.id}">
       <div class="row" style="background:transparent; border:none; padding:0;">
         <div class="meta">
           <div class="primary">${r.id}</div>
-          <div class="secondary">${r.quantity_kwh} kWh requested · ceiling ₹${r.max_price_per_kwh}/kWh</div>
+          <div class="secondary">${r.quantity_kwh} kWh requested · ceiling ₹${r.max_price_per_kwh}/kWh${progress}</div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
-          <span class="badge ${r.status === "PUBLISHED" || r.status === "FULFILLED" ? "settled" : "waiting"}">${r.status}</span>
-          ${r.status === "PENDING" || r.status === "RECOMMENDED" ? `<button class="secondary" onclick="recommend('${r.id}')">Recommend pool</button>` : ""}
+          <span class="badge ${r.status === "FULFILLED" || r.status === "PUBLISHED" ? "settled" : "waiting"}">${r.status}</span>
+          ${canRecommend ? `<button class="secondary" onclick="recommend('${r.id}')">Recommend pool</button>` : ""}
         </div>
       </div>
       <div id="req-result-${r.id}"></div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
   // Re-paint any recommendation this refresh just wiped from the DOM.
   for (const r of reqs) {
-    if ((r.status === "PENDING" || r.status === "RECOMMENDED") && recommendationCache[r.id]) renderRecommendationResult(r.id);
+    if (r.status !== "FULFILLED" && recommendationCache[r.id]) renderRecommendationResult(r.id);
   }
 }
 

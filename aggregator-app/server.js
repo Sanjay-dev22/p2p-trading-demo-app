@@ -106,7 +106,7 @@ app.get("/api/about", (req, res) => {
     simplifications: [
       "Reuses sellerapp.example.com's already-registered signing identity (same keys as onix-sellerapp) for onix-aggregatorapp rather than registering a brand-new, distinct network participant — that step needs real DeDi registration + namespace-owner approval, out of scope for this demo. Routing is genuinely separate (own container, own catalog, own lifecycle); only the underlying signing identity is shared.",
       "Incoming requirements are matched with a simple cheapest-first greedy fill up to the requested quantity (capped by the price ceiling), not a true constrained optimization.",
-      "Pools once, at publish time — no re-aggregation as individual sellers' availability changes mid-window.",
+      "Each individual block's own membership is fixed at its own publish time — no re-aggregation of an already-published block as sellers' availability changes mid-window. A requirement as a whole CAN be topped up with additional, separate blocks over time as new sellers appear (see below), but that's a new block, not a reopened old one.",
       "Disaggregates the block's one real delivered-quantity reading proportionally across members (no per-member smart meter in this demo) — a real deployment would use each member's own real meter reading, per the 'virtual meter' reconciliation approach the real IES implementation guide describes.",
       "Grid/DISCOM (grid-app) now has its own onix identity and executes the real discover/buy/confirm itself (Phase 2) — reusing buyer-app's already-registered keys (buyerapp.example.com) rather than a newly-registered identity, the same no-new-DeDi-registration trick used for this app's own identity above. buyer-app remains a fully independent bulk buyer that can see and buy the same public block too — whoever confirms first gets it; the loser's requirement just stays unfulfilled until a fresh pool is recommended.",
     ],
@@ -133,9 +133,18 @@ async function listAvailableOffers() {
   const discovered = await peers.fetchDiscoveredOffers();
   const ownOffers = await peers.fetchSellerOffers();
   const ownById = new Map(ownOffers.map((o) => [o.id, o]));
-  const pending = db.prepare("SELECT offer_id FROM pool_members WHERE block_id IS NULL").all().map((r) => r.offer_id);
+  // Excludes an offer the moment it's EVER been enrolled, not only while its
+  // pool is still pending (block_id IS NULL) — found live: because pooling
+  // never reserves capacity on seller-app's own catalog (the disclosed gap
+  // in listAvailableOffers below this fix used to only guard against), an
+  // offer already locked into a published block would still show up as
+  // "available" and could be pooled into a SECOND, different block, double-
+  // selling the same physical seller capacity. Once an offer is unenrolled
+  // (DELETE /api/pool/unenroll, only possible pre-publish) its row is gone
+  // from pool_members entirely, so it correctly becomes available again.
+  const everPooled = db.prepare("SELECT DISTINCT offer_id FROM pool_members").all().map((r) => r.offer_id);
   return discovered
-    .filter((o) => ownById.has(o.offer_id) && !pending.includes(o.offer_id))
+    .filter((o) => ownById.has(o.offer_id) && !everPooled.includes(o.offer_id))
     .map((o) => {
       const own = ownById.get(o.offer_id);
       return { ...o, price_per_kwh: own.price_per_kwh, available_qty: own.remaining_qty };
@@ -221,14 +230,25 @@ app.post("/api/requirements/:id/recommend", async (req, res) => {
   try {
     const requirement = db.prepare("SELECT * FROM requirements WHERE id=?").get(req.params.id);
     if (!requirement) return res.status(404).json({ error: "requirement not found" });
+    if (requirement.status === "FULFILLED") {
+      return res.status(409).json({ error: `Requirement ${requirement.id} is already fully bought (${requirement.fulfilled_qty} of ${requirement.quantity_kwh} kWh) — nothing left to recommend.` });
+    }
 
     const candidates = (await listAvailableOffers())
       .map((o) => ({ offerId: o.offer_id, sellerId: o.seller_id, pricePerKwh: o.price_per_kwh, availableQty: o.available_qty }))
       .filter((o) => o.pricePerKwh <= requirement.max_price_per_kwh)
       .sort((a, b) => a.pricePerKwh - b.pricePerKwh);
 
+    // Matches against what's STILL needed, not the original full amount —
+    // a requirement can already be partly bought from an earlier, smaller
+    // published block (this is what lets a late-arriving seller's offer,
+    // discovered hours later, top up a requirement instead of the operator
+    // having no way back in once something was already published for it).
+    const alreadyBought = requirement.fulfilled_qty || 0;
+    const neededQty = round2(Math.max(0, requirement.quantity_kwh - alreadyBought));
+
     const picked = [];
-    let qtyRemaining = requirement.quantity_kwh;
+    let qtyRemaining = neededQty;
     for (const c of candidates) {
       if (qtyRemaining <= 0) break;
       const take = round2(Math.min(c.availableQty, qtyRemaining));
@@ -239,6 +259,16 @@ app.post("/api/requirements/:id/recommend", async (req, res) => {
     const totalQty = round2(picked.reduce((s, p) => s + p.takeQty, 0));
     const blendedBasePrice = totalQty > 0 ? round2(picked.reduce((s, p) => s + p.takeQty * p.pricePerKwh, 0) / totalQty) : 0;
     const fulfilled = qtyRemaining <= 0.001;
+    // Heuristic warning only (the operator picks the real margin at publish
+    // time, which is enforced for real there and again at grid-app's buy
+    // boundary) — found live: the underlying small-offer prices were each
+    // individually under the ceiling, but the published block's actual
+    // price (blended + margin) still exceeded it, and nothing caught that
+    // until a buyer had already paid above their own stated ceiling.
+    const estimatedBlockPrice = totalQty > 0 ? round2(blendedBasePrice + DEFAULT_MARGIN_PER_KWH) : 0;
+    const marginWarning = totalQty > 0 && estimatedBlockPrice > requirement.max_price_per_kwh
+      ? ` Warning: with the default ₹${DEFAULT_MARGIN_PER_KWH}/kWh margin, the published price would be ₹${estimatedBlockPrice}/kWh — already above this requirement's ₹${requirement.max_price_per_kwh}/kWh ceiling. Publish at a lower margin or it will be rejected.`
+      : "";
 
     if (requirement.status === "PENDING") {
       db.prepare("UPDATE requirements SET status=? WHERE id=?").run("RECOMMENDED", requirement.id);
@@ -250,10 +280,14 @@ app.post("/api/requirements/:id/recommend", async (req, res) => {
       totalQty,
       blendedBasePrice,
       fulfilled,
+      neededQty,
+      alreadyBought,
       shortfallQty: fulfilled ? 0 : round2(qtyRemaining),
-      note: fulfilled
-        ? "This combination fully meets the requirement within its price ceiling."
-        : `Only ${totalQty} of the requested ${requirement.quantity_kwh} kWh could be matched within the ₹${requirement.max_price_per_kwh}/kWh ceiling from currently available real offers.`,
+      note: (fulfilled
+        ? (alreadyBought > 0
+            ? `This combination covers the remaining ${neededQty} kWh still needed (${alreadyBought} of ${requirement.quantity_kwh} kWh already bought).`
+            : "This combination fully meets the requirement within its price ceiling.")
+        : `Only ${totalQty} of the ${neededQty} kWh still needed could be matched within the ₹${requirement.max_price_per_kwh}/kWh ceiling from currently available real offers.`) + marginWarning,
     });
   } catch (err) {
     console.error("recommend failed:", err);
@@ -273,9 +307,30 @@ app.post("/api/pool/publish", async (req, res) => {
     const margin = marginPerKwh > 0 ? marginPerKwh : DEFAULT_MARGIN_PER_KWH;
     const requirementId = req.body?.requirementId || null;
 
+    let requirement = null;
+    if (requirementId) {
+      requirement = db.prepare("SELECT * FROM requirements WHERE id=?").get(requirementId);
+      if (!requirement) return res.status(404).json({ error: `requirement ${requirementId} not found` });
+      if (requirement.status === "FULFILLED") {
+        return res.status(409).json({ error: `Requirement ${requirementId} is already fully bought — publishing another block against it would overshoot what was asked for.` });
+      }
+    }
+
     const members = db.prepare("SELECT * FROM pool_members WHERE block_id IS NULL").all();
-    if (members.length < 2) {
+    // The >=2 minimum exists so a "pooled block" is genuine aggregation,
+    // not just relabeling one seller's own offer. That reasoning doesn't
+    // apply to a top-up block for a requirement that's already partly
+    // bought from an earlier, real multi-seller block -- found live: a
+    // single new seller's offer showing up later (the realistic case) was
+    // getting blocked from ever topping up the requirement, even though
+    // the requirement's aggregation was already genuinely multi-seller
+    // overall, just not from this one later top-up alone.
+    const isTopUp = requirement && (requirement.fulfilled_qty || 0) > 0;
+    if (members.length < 2 && !isTopUp) {
       return res.status(400).json({ error: "pool a least 2 small offers before publishing a block" });
+    }
+    if (members.length < 1) {
+      return res.status(400).json({ error: "pool at least 1 small offer before publishing a block" });
     }
 
     // Re-verify every member right before publishing — see
@@ -297,6 +352,19 @@ app.post("/api/pool/publish", async (req, res) => {
     const totalQty = round2(members.reduce((s, m) => s + m.enrolled_qty, 0));
     const blendedBase = members.reduce((s, m) => s + m.enrolled_qty * m.price_per_kwh, 0) / totalQty;
     const blockPrice = round2(blendedBase + margin);
+
+    // Found live: the underlying small-offer prices can each individually
+    // sit under a linked requirement's ceiling, but the published block's
+    // real price (blended + margin) can still end up above it — and
+    // nothing caught that before a buyer had already paid over their own
+    // stated max. Enforced here, not just at grid-app's buy boundary, so
+    // an invalid block is never created in the first place.
+    if (requirement && blockPrice > requirement.max_price_per_kwh) {
+      return res.status(409).json({
+        error: `Publishing at ₹${blockPrice}/kWh (blended ₹${round2(blendedBase)} + ₹${margin} margin) would exceed requirement ${requirementId}'s own ₹${requirement.max_price_per_kwh}/kWh ceiling -- lower the margin or re-pool cheaper offers.`,
+      });
+    }
+
     const offerId = `offer-agg-${beckn.uuid().slice(0, 8)}`;
 
     const { context, message } = beckn.buildPublishCatalog({ offerId, quantityKwh: totalQty, pricePerKwh: blockPrice, memberCount: members.length });
@@ -308,12 +376,18 @@ app.post("/api/pool/publish", async (req, res) => {
 
     const now = beckn.nowIso();
     db.prepare(
-      "INSERT INTO blocks (id, total_quantity_kwh, remaining_qty, blended_price_per_kwh, margin_per_kwh, member_count, published_at) VALUES (?,?,?,?,?,?,?)"
-    ).run(offerId, totalQty, totalQty, blockPrice, margin, members.length, now);
+      "INSERT INTO blocks (id, total_quantity_kwh, remaining_qty, blended_price_per_kwh, margin_per_kwh, member_count, published_at, requirement_id) VALUES (?,?,?,?,?,?,?,?)"
+    ).run(offerId, totalQty, totalQty, blockPrice, margin, members.length, now, requirementId);
 
     db.prepare("UPDATE pool_members SET block_id=? WHERE block_id IS NULL").run(offerId);
     if (requirementId) {
-      db.prepare("UPDATE requirements SET status=?, block_id=? WHERE id=?").run("PUBLISHED", offerId, requirementId);
+      // block_id here is just "most recently published block" for simple
+      // display — the authoritative link for "every block that's ever
+      // served this requirement" is blocks.requirement_id (a requirement
+      // can span more than one block over time; see the init handler's
+      // fulfilled_qty bookkeeping below). Status guarded against FULFILLED
+      // (checked above too, but this stays consistent even under a race).
+      db.prepare("UPDATE requirements SET status=?, block_id=? WHERE id=? AND status != ?").run("PUBLISHED", offerId, requirementId, "FULFILLED");
     }
 
     logEvent(offerId, `Published block ${offerId}: ${totalQty} kWh @ ₹${blockPrice}/kWh (blended ₹${round2(blendedBase)} + ₹${margin} margin) from ${members.length} pooled sellers — own catalog entry, own lifecycle`);
@@ -332,6 +406,19 @@ app.get("/api/offers", (req, res) => {
   const rows = db
     .prepare("SELECT id, total_quantity_kwh AS quantity_kwh, remaining_qty, blended_price_per_kwh AS price_per_kwh, published_at FROM blocks ORDER BY published_at DESC")
     .all();
+  res.json(rows);
+});
+
+// ---------- Every block ever published to serve a given requirement ----------
+// A requirement can now span more than one block over time (partial publish
+// now, topped up later once new sellers show up) — grid-app's own buy flow
+// uses this (cheapest-first, same spirit as recommend) instead of assuming
+// a requirement's `block_id` is the only block that was ever published for
+// it.
+app.get("/api/requirements/:id/blocks", (req, res) => {
+  const rows = db
+    .prepare("SELECT id, total_quantity_kwh AS quantity_kwh, remaining_qty, blended_price_per_kwh AS price_per_kwh, published_at FROM blocks WHERE requirement_id=? ORDER BY blended_price_per_kwh ASC")
+    .all(req.params.id);
   res.json(rows);
 });
 
@@ -366,13 +453,22 @@ app.post("/api/webhook/:action", async (req, res) => {
 
       db.prepare("UPDATE blocks SET remaining_qty = remaining_qty - ? WHERE id=?").run(requestedQty, blockId);
       // Close the demand-side loop regardless of *which* real buyer (grid-app
-      // or buyer-app) won this block — a requirement is fulfilled once the
-      // physical capacity it asked for is actually sold, not only when
-      // grid-app itself happens to be the buyer (see the disclosed race
-      // condition in KNOWLEDGE-BASE.md §9's Phase 2).
-      const afterBlock = db.prepare("SELECT remaining_qty FROM blocks WHERE id=?").get(blockId);
-      if (afterBlock && afterBlock.remaining_qty <= 0) {
-        db.prepare("UPDATE requirements SET status=? WHERE block_id=? AND status=?").run("FULFILLED", blockId, "PUBLISHED");
+      // or buyer-app) won this purchase — a requirement is fulfilled once
+      // the physical quantity it asked for is actually bought, not only
+      // when grid-app itself happens to be the buyer (see the disclosed
+      // race condition in KNOWLEDGE-BASE.md §9's Phase 2). Tracked against
+      // the REQUIREMENT's own cumulative fulfilled_qty, not this one
+      // block's remaining_qty reaching zero -- a requirement can now be
+      // served by more than one block over time (a block smaller than the
+      // requirement no longer deadlocks it; see §9's Phase 2 follow-up),
+      // so "this block sold out" is no longer the same thing as "this
+      // requirement is fulfilled."
+      if (block.requirement_id) {
+        db.prepare("UPDATE requirements SET fulfilled_qty = fulfilled_qty + ? WHERE id=?").run(requestedQty, block.requirement_id);
+        const linkedReq = db.prepare("SELECT * FROM requirements WHERE id=?").get(block.requirement_id);
+        if (linkedReq && linkedReq.fulfilled_qty >= linkedReq.quantity_kwh - 0.001 && linkedReq.status !== "FULFILLED") {
+          db.prepare("UPDATE requirements SET status=? WHERE id=?").run("FULFILLED", block.requirement_id);
+        }
       }
       const now = beckn.nowIso();
       db.prepare(

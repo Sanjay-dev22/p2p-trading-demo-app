@@ -859,6 +859,112 @@ aggregator-app's and grid-app's own dashboards). `buyer-app` confirmed
 completely unaffected throughout (its own `/api/my-offers` endpoint
 unchanged, no code touched).
 
+### Aggregation v2 Phase 2 follow-up (2026-10-15): the shortfall/top-up bug, and three more found while fixing it
+
+The user asked directly: "an aggregator can publish less than the grid
+requirement only based on available pool, but the grid dashboard can't
+accept that — so if hours later a new seller offer comes in, the
+aggregator can't republish to match the requirement, and it feels like
+a stale blocked pooled offer." Verified live before touching any code
+(not taken on faith) — reproduced exactly:
+
+1. **Reproduced:** seller published only 10 kWh; grid posted a 20 kWh
+   requirement; `recommend` honestly flagged `fulfilled: false,
+   shortfallQty: 10`; nothing stopped `/api/pool/publish` from
+   publishing the undersized 10 kWh block anyway, tagging the
+   requirement `PUBLISHED`. From there: `grid-app`'s buy flow correctly
+   *refused* to buy it (`"Only 10 kWh remains... requirement needs 20
+   kWh"` — a real, hard-earned safety check from Phase 2), but the
+   aggregator dashboard's "Recommend pool" button was only ever shown
+   for `PENDING`/`RECOMMENDED` status, so once `PUBLISHED` there was no
+   way back in, ever — exactly the stuck/dead requirement the user
+   described.
+
+2. **Root cause:** the whole design assumed one requirement ↔ exactly
+   one block. Real flexibility markets (Piclo Flex included) support
+   incremental/partial dispatch over time — a requirement should be
+   fulfillable by *however many* blocks it takes, not exactly one.
+
+3. **While reproducing it, found three more real bugs by testing
+   adjacent paths, not just the one reported:**
+   - **Double-countable pooled capacity:** `listAvailableOffers()` only
+     excluded an offer while its pool was still pending (`block_id IS
+     NULL`) — once published, it dropped out of that exclusion and
+     could be recommended into a **second, different** block, since
+     seller-app's own `remaining_qty` for that offer was never
+     decremented in the first place (the already-disclosed "pooling
+     never reserves capacity" gap). This would have let the aggregator
+     double-sell the same physical seller capacity across two blocks —
+     confirmed live by re-running `recommend` and seeing the identical,
+     already-published offers come back as candidates again.
+   - **Price ceiling not enforced against the real, margin-inclusive
+     block price:** `recommend` only checked underlying small-offer
+     prices against the requirement's ceiling, not the final published
+     price (blended + margin). Reproduced live: two offers at ₹12.9/kWh
+     against a ₹13/kWh ceiling, default ₹0.3/kWh margin → published at
+     ₹13.2/kWh, and `grid-app` paid it without complaint — a buyer
+     silently paying above its own stated max price.
+   - **The ≥2-offer minimum re-created the exact same deadlock one
+     layer deeper:** after fixing the first three, topping up a
+     partially-fulfilled requirement with the realistic "one new seller
+     shows up later" case still failed — `/api/pool/publish` requires
+     at least 2 pending pool members, and a single new offer alone
+     can't satisfy that, even though the requirement as a whole is
+     already a genuine multi-seller aggregation from its first block.
+
+**Fixes, all in `aggregator-app` (`db.js`, `server.js`,
+`public/index.html`) and `grid-app` (`server.js`, `public/index.html`):**
+- `requirements` gets `fulfilled_qty` (cumulative kWh actually bought,
+  across however many blocks); `blocks` gets `requirement_id` (a
+  requirement can now have more than one block over time, found via
+  `GET /api/requirements/:id/blocks`, new). `FULFILLED` is now driven
+  by `fulfilled_qty >= quantity_kwh` on the *requirement*, set in the
+  `init` handler, not by one block's `remaining_qty` reaching 0.
+- `recommend` matches against `quantity_kwh - fulfilled_qty` (what's
+  still needed), not the original full amount, refuses to run on an
+  already-`FULFILLED` requirement, and warns (using the default margin
+  as a heuristic) when the likely published price would already exceed
+  the ceiling.
+- `/api/pool/publish` now **hard-rejects** a block whose final price
+  (blended + chosen margin) exceeds a linked requirement's ceiling, and
+  refuses to publish another block against an already-`FULFILLED`
+  requirement. The ≥2-offer minimum is relaxed to ≥1 specifically when
+  `requirement.fulfilled_qty > 0` (a genuine top-up of an
+  already-multi-seller aggregation, not a fresh "one seller relabeled
+  as a block").
+- `listAvailableOffers()` now excludes an offer the moment it's **ever**
+  been enrolled (any row in `pool_members`, not just pending ones) —
+  closing the double-sell path. Unenrolling (pre-publish only) still
+  correctly frees it back up.
+- The aggregator dashboard's "Recommend pool" button now shows for
+  anything short of `FULFILLED` (was: only `PENDING`/`RECOMMENDED`) —
+  this is the actual, direct fix for the user's "stale blocked pooled
+  offer" complaint. Both dashboards show "`X` of `Y` kWh bought so far."
+- `grid-app`'s `/api/requirements/:id/buy` no longer assumes one block:
+  it fetches every live block tied to the requirement, re-checks each
+  one's price against the ceiling (defense in depth, not just trusting
+  aggregator-app's publish-time check), buys cheapest-first across
+  however many it takes to cover what's still needed, and honestly
+  reports a remaining shortfall instead of erroring outright if only
+  partial capacity is available. No longer blocked by an earlier trade
+  already existing for the same requirement.
+
+**Verified live (2026-10-15), the user's exact scenario end to end:**
+10 kWh published (of a 20 kWh ask) → bought in full, honest shortfall
+reported, requirement stayed `PUBLISHED` with `fulfilled_qty: 10` (not
+stuck, not falsely `FULFILLED`) → a new 10 kWh seller offer appeared
+("hours later") → `recommend` correctly matched only the *remaining*
+10 kWh → published as a **second** block tied to the same requirement
+from a single new offer (confirming the ≥2-minimum relaxation) → bought
+→ requirement correctly flipped `FULFILLED` at `fulfilled_qty: 20`.
+Separately verified: an oversized 20 kWh block against a 15 kWh
+requirement had only the needed 15 kWh bought, leaving 5 kWh surplus on
+the block (still generally buyable by `buyer-app`), no over-purchase.
+Separately verified: a block priced above its requirement's ceiling is
+now rejected at publish (`409`), and publishes successfully once a
+lower margin is chosen. Full delivery → settlement re-verified with no
+regression (hand-verified exact, same as every prior pass).
+
 ---
 
 ## 10. Glossary (Beckn/onix terms used throughout)
