@@ -68,6 +68,8 @@
   .delivery-note { font-size: 12px; color: var(--muted); line-height: 1.5; }
   .role-banner { background: rgba(47,224,198,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); max-width: 960px; margin: 16px auto 0; }
   .role-banner b { color: var(--text); }
+  .role-banner-line { margin: 0 0 8px; }
+  .role-banner-line:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -83,7 +85,8 @@
   </div>
 </header>
 <div class="role-banner">
-  <b>Your role:</b> an individual energy producer (prosumer). <b>Your job:</b> publish what you have to sell — once per offer, then wait. Anyone can discover and buy it: a direct buyer, or an aggregator pooling you together with other small sellers into a bigger block. You can't tell which happened just by looking at the incoming request — both arrive here the same way. <b>Note:</b> if an aggregator pools your offer, this demo currently does <i>not</i> reserve your capacity automatically — your offer keeps showing as fully available to any other direct buyer too, until Gap-7-style reservation is added (see KNOWLEDGE-BASE.md §9).
+  <div class="role-banner-line"><b>Your role:</b> an individual energy producer (prosumer).</div>
+  <div class="role-banner-line"><b>Your job:</b> publish what you have to sell — once per offer, then wait. Anyone can discover and buy it: a direct buyer, or an aggregator pooling you together with other small sellers into a bigger block. You can't tell which happened just by looking at the incoming request — both arrive here the same way.</div>
 </div>
 <main>
   <div class="panel">
@@ -206,6 +209,17 @@ function copyOfferId(id, btn) {
 
 async function renderRequests(list, offersById) {
   const el = $("#requests");
+  // Found live: the content-diff guard around this call (see refreshAll)
+  // only skips a rebuild when NOTHING in the whole `requests` list
+  // changed — if a *different* incoming bid's data changes while the
+  // operator is mid-typing a counter price/qty for *this* one, the whole
+  // list still re-renders and silently wipes what they'd typed. Snapshot
+  // and restore across the rebuild, same fix as aggregator-app's
+  // delivered-kWh input and the other bugs in this same family.
+  const pending = {};
+  document.querySelectorAll('input[id^="cp-"], input[id^="cq-"]').forEach((input) => {
+    if (input.value) pending[input.id] = input.value;
+  });
   if (!list.length) { el.innerHTML = '<div class="empty">No incoming requests yet.</div>'; return; }
   const blocks = await Promise.all(list.map(async (t) => {
     const askLine = t.askingPricePerKwh != null && t.askingPricePerKwh !== t.pricePerKwh
@@ -244,10 +258,22 @@ async function renderRequests(list, offersById) {
     </div>`;
   }));
   el.innerHTML = blocks.join("");
+  Object.entries(pending).forEach(([id, value]) => {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
+  });
 }
 
 async function renderTrades(list) {
   const el = $("#trades");
+  // Same fix as renderRequests above: snapshot an in-progress delivered-kWh
+  // reading (and whether it was already "touched" — manually edited or
+  // previously auto-filled) before a rebuild triggered by a DIFFERENT
+  // trade's data changing, and restore both after.
+  const pendingReadings = {};
+  document.querySelectorAll('input[id^="fa-"]').forEach((input) => {
+    if (input.value) pendingReadings[input.id] = { value: input.value, touched: !!input.dataset.touched };
+  });
   if (!list.length) { el.innerHTML = '<div class="empty">No trades yet.</div>'; return; }
   const blocks = await Promise.all(list.map(async (t) => {
     const counterLine = t.counterPricePerKwh
@@ -279,8 +305,17 @@ async function renderTrades(list) {
     </div>`;
   }));
   el.innerHTML = blocks.join("");
-  // Fill in a randomized-but-editable suggestion for any delivery form just rendered.
-  list.filter((t) => t.status === "ACTIVE").forEach((t) => {
+  Object.entries(pendingReadings).forEach(([id, { value, touched }]) => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.value = value;
+    if (touched) input.dataset.touched = "1";
+  });
+  // Fill in a randomized-but-editable suggestion for any delivery form just
+  // rendered — skipped for anything just restored above (touched or not:
+  // a restored value is never a blank, freshly-rendered input that's
+  // actually waiting on a suggestion).
+  list.filter((t) => t.status === "ACTIVE" && !pendingReadings[`fa-${t.transactionId}`]).forEach((t) => {
     fetch(`/api/deliver/${t.transactionId}/suggest`).then((r) => r.json()).then((s) => {
       const input = document.getElementById(`fa-${t.transactionId}`);
       if (input && !input.dataset.touched) input.value = s.suggestedFinalAlloc;
