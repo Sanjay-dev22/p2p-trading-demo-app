@@ -17,6 +17,13 @@ const PORT = process.env.PORT || 4001;
 // a real Beckn message) when we decline a counter-offer — see seller-app's
 // matching BUYER_APP_URL.
 const SELLER_APP_URL = process.env.SELLER_APP_URL || "http://localhost:4002";
+// aggregation-v2: aggregator-app owns its own onix instance and catalog
+// (no longer piggybacking on seller-app's — see KNOWLEDGE-BASE.md), so its
+// published blocks need the same "is this genuinely live right now"
+// real-catalog check resolveOffer() already does for seller-app, and its
+// own routing address for the init message to actually reach it.
+const AGGREGATOR_APP_URL = process.env.AGGREGATOR_APP_URL || "http://localhost:4003";
+const AGGREGATOR_BPP_URI = "http://aggregatorapp.example.com:9000/bpp/receiver";
 
 // Same extraction already used inline in /api/buy below, pulled out so every
 // onix-rejection route gives the real reason, not a generic "onix rejected X".
@@ -141,12 +148,29 @@ async function resolveOffer(offerId) {
       // been sold. A fully depleted offer is found, but not buyable.
       const remaining = own.remaining_qty ?? own.quantity_kwh;
       if (remaining <= 0) {
-        return { found: true, buyable: false, sellerId: beckn.SELLER_ID, offerId, pricePerKwh: own.price_per_kwh, availableQty: 0, reason: "This offer is fully sold — no capacity remains." };
+        return { found: true, buyable: false, sellerId: beckn.SELLER_ID, bppUri: beckn.SELLER_URI, offerId, pricePerKwh: own.price_per_kwh, availableQty: 0, reason: "This offer is fully sold — no capacity remains." };
       }
-      return { found: true, buyable: true, sellerId: beckn.SELLER_ID, offerId, pricePerKwh: own.price_per_kwh, availableQty: remaining };
+      return { found: true, buyable: true, sellerId: beckn.SELLER_ID, bppUri: beckn.SELLER_URI, offerId, pricePerKwh: own.price_per_kwh, availableQty: remaining };
     }
   } catch (err) {
     console.error("resolveOffer: could not reach Seller Platform at", SELLER_APP_URL, "—", err.message || err);
+  }
+
+  // aggregation-v2: a pooled block lives on aggregator-app's own catalog,
+  // never seller-app's (see onix-aggregatorapp) — check there too before
+  // falling back to the stale discovered_offers cache.
+  try {
+    const aggOffers = await fetch(`${AGGREGATOR_APP_URL}/api/offers`).then((r) => (r.ok ? r.json() : []));
+    const own = aggOffers.find((o) => o.id === offerId);
+    if (own) {
+      const remaining = own.remaining_qty ?? own.quantity_kwh;
+      if (remaining <= 0) {
+        return { found: true, buyable: false, sellerId: beckn.SELLER_ID, bppUri: AGGREGATOR_BPP_URI, offerId, pricePerKwh: own.price_per_kwh, availableQty: 0, reason: "This pooled block is fully sold — no capacity remains." };
+      }
+      return { found: true, buyable: true, sellerId: beckn.SELLER_ID, bppUri: AGGREGATOR_BPP_URI, offerId, pricePerKwh: own.price_per_kwh, availableQty: remaining };
+    }
+  } catch (err) {
+    console.error("resolveOffer: could not reach Aggregator Platform at", AGGREGATOR_APP_URL, "—", err.message || err);
   }
 
   const discovered = db.prepare("SELECT * FROM discovered_offers WHERE offer_id=?").get(offerId);
@@ -275,7 +299,7 @@ app.post("/api/buy", async (req, res) => {
     const pricePerKwh = bid > 0 ? bid : askingPricePerKwh;
     const quantityKwh = requestedQty;
 
-    const { context, message } = beckn.buildInit({ offerId, quantityKwh, pricePerKwh, buyerDiscomId });
+    const { context, message } = beckn.buildInit({ offerId, quantityKwh, pricePerKwh, buyerDiscomId, bppUri: resolution.bppUri });
     const now = beckn.nowIso();
     const result = await beckn.postToOnix("/bap/caller/init", { context, message });
 

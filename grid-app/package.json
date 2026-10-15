@@ -1,0 +1,17 @@
+{
+  "name": "p2p-trading-grid-app",
+  "version": "1.0.0",
+  "description": "Grid/DISCOM demand-side dashboard — posts bulk energy requirements for aggregator-app to match and fulfill. REST-only, no onix/beckn identity of its own in this phase (see KNOWLEDGE-BASE.md's aggregation-v2 section).",
+  "private": true,
+  "type": "commonjs",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

@@ -14,20 +14,21 @@
 // request the moment a buyer inits against it, regardless of who actually
 // published it.
 //
-// So instead of re-deriving the protocol flow, this app treats seller-app
-// and buyer-app as what ARCHITECTURE.md §2 already says every real
-// participant is: an independent platform with its own real REST API.
-// Discovering small offers means asking buyer-app what IT has already
-// discovered (the exact same proxy pattern buyer-app's own resolveOffer()
-// already uses against seller-app — see buyer-app/server.js). Publishing
-// the pooled block means asking seller-app to publish it through its own,
-// already-working /api/publish — the pooled block then genuinely is one
-// of seller-app's real catalog offers, tradeable by anyone on the network,
-// settled through seller-app's existing, already-verified lifecycle.
+// So instead of re-deriving the discover flow, this app treats buyer-app as
+// what ARCHITECTURE.md §2 already says every real participant is: an
+// independent platform with its own real REST API. Discovering small
+// offers means asking buyer-app what IT has already discovered (the exact
+// same proxy pattern buyer-app's own resolveOffer() already uses against
+// seller-app), and cross-checking candidates against seller-app's own live
+// catalog the same way buyer-app's resolveOffer() does.
 //
-// The only things invented here are the pooling/blending math and the
-// disaggregation math once a real settlement comes back — never a new
-// protocol shape.
+// Publishing the pooled block is DIFFERENT from the first version of this
+// app: aggregation-v2 gives aggregator-app its own onix adapter instance
+// (onix-aggregatorapp — see install/docker-compose.yml and beckn.js), so
+// publishing/lifecycle now goes through this app's own beckn.js directly,
+// not through seller-app's /api/publish. The pooled block is this app's
+// own real catalog entry from the moment it's published — see
+// KNOWLEDGE-BASE.md's aggregation-v2 section for the full why.
 const crypto = require("crypto");
 
 const BUYER_APP_URL = process.env.BUYER_APP_URL || "http://localhost:4001";
@@ -84,27 +85,6 @@ async function fetchSellerOffers() {
   return r.ok ? r.json || [] : [];
 }
 
-// Publishes the pooled block through seller-app's own, already-working
-// publish pipeline — real onix call, real signed message, real catalog
-// entry. Returns seller-app's own response verbatim (includes the real
-// offerId it assigned).
-async function publishBlock({ quantityKwh, pricePerKwh }) {
-  return getJson(`${SELLER_APP_URL}/api/publish`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ quantityKwh, pricePerKwh }),
-  });
-}
-
-// seller-app's own trades — used to find out, by real offerId match,
-// whether the bulk buyer's trade against our published block has reached
-// SETTLED yet, and if so, the real settlement amount seller-app's own
-// linked rego policy actually computed.
-async function fetchSellerTrades() {
-  const r = await getJson(`${SELLER_APP_URL}/api/trades`);
-  return r.ok ? r.json || [] : [];
-}
-
 module.exports = {
   BUYER_APP_URL,
   SELLER_APP_URL,
@@ -113,6 +93,4 @@ module.exports = {
   triggerDiscover,
   fetchDiscoveredOffers,
   fetchSellerOffers,
-  publishBlock,
-  fetchSellerTrades,
 };

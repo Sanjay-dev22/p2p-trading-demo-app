@@ -52,6 +52,8 @@
   .simplifications li { margin-bottom: 4px; }
   .role-banner { background: rgba(192,127,42,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); margin: 0 0 20px; }
   .role-banner b { color: var(--text); }
+  .role-banner-line { margin: 0 0 8px; }
+  .role-banner-line:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -62,7 +64,10 @@
 <main>
 
   <div class="role-banner">
-    <b>Your role:</b> the aggregator — a middleman between many small sellers and one bulk buyer. <b>Your job:</b> discover small sellers' offers, pool several into one bigger block, publish that block (from then on it behaves exactly like a normal seller offer to the rest of the network), and once it's bought and settled, split the real proceeds back to the small sellers you pooled. <b>Who talks to whom:</b> small sellers only ever interact with seller-app's own dashboard (they publish once, then wait — they never see you or the bulk buyer directly). The bulk buyer only ever interacts with buyer-app's dashboard, discovering and buying your published block like any other offer — they never see the individual pooled sellers. <b>You</b> are the only one who sees both sides and does the pooling/splitting math.
+    <div class="role-banner-line"><b>Your role:</b> the aggregator — a middleman between many small sellers and one bulk buyer.</div>
+    <div class="role-banner-line"><b>Your job:</b> discover small sellers' offers, pool several into one bigger block, publish that block (from then on it behaves exactly like a normal seller offer to the rest of the network), and once it's bought and settled, split the real proceeds back to the small sellers you pooled.</div>
+    <div class="role-banner-line"><b>Who talks to whom:</b> small sellers only ever interact with seller-app's own dashboard (they publish once, then wait — they never see you or the bulk buyer directly). The bulk buyer only ever interacts with buyer-app's dashboard, discovering and buying your published block like any other offer — they never see the individual pooled sellers.</div>
+    <div class="role-banner-line"><b>You</b> are the only one who sees both sides and does the pooling/splitting math.</div>
   </div>
 
   <div class="panel">
@@ -73,7 +78,13 @@
   </div>
 
   <div class="panel">
-    <h2>2 · Current pool (not yet published)</h2>
+    <h2>2 · Bulk-buyer requirements (from Grid/DISCOM)</h2>
+    <p class="hint">Demand-first matching: a requirement is posted by the Grid/DISCOM dashboard (quantity + a price ceiling). "Recommend" runs a cheapest-first match against currently discovered offers — it never proposes anything above the ceiling, and clearly flags a shortfall instead of hiding one.</p>
+    <div class="list" id="requirementsList"></div>
+  </div>
+
+  <div class="panel">
+    <h2>3 · Current pool (not yet published)</h2>
     <div class="summary-bar">
       <div class="stat"><div class="num" id="poolQty">0</div><div class="lbl">kWh pooled</div></div>
       <div class="stat"><div class="num" id="poolBlended">₹0</div><div class="lbl">blended price/kWh</div></div>
@@ -87,8 +98,8 @@
   </div>
 
   <div class="panel">
-    <h2>3 · Published blocks & disaggregation</h2>
-    <p class="hint">Once the bulk buyer (buyer-app) buys and seller-app reports delivery, the real settlement amount appears here — split back to each pooled seller at THEIR OWN original price, with the aggregator's margin shown explicitly.</p>
+    <h2>4 · Published blocks, delivery & disaggregation</h2>
+    <p class="hint">Once the bulk buyer (buyer-app) buys it, this block's lifecycle (accept, confirm, delivery, settlement) is this app's own — not seller-app's, and the small pooled sellers are never involved again. Report delivery here once the trade is Active; the real settlement amount then appears, split back to each pooled seller at THEIR OWN original price, with the aggregator's margin shown explicitly.</p>
     <div class="list" id="blocksList"></div>
   </div>
 
@@ -104,6 +115,10 @@
 const $ = (sel) => document.querySelector(sel);
 const toast = (msg) => { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2800); };
 const money = (n) => n == null ? "—" : `₹${Number(n).toFixed(2)}`;
+// Set when "Apply recommendation" enrolls a requirement's matched offers —
+// carried through to /api/pool/publish so that requirement gets marked
+// PUBLISHED and linked to the resulting block id.
+let pendingRequirementId = null;
 
 async function api(path, opts) {
   const res = await fetch(path, opts);
@@ -129,6 +144,52 @@ async function loadAvailable() {
       </div>
       <button class="secondary" onclick="enroll('${o.offer_id}','${o.seller_id}',${o.price_per_kwh},${o.available_qty})">Pool this offer</button>
     </div>`).join("");
+}
+
+async function loadRequirements() {
+  const reqs = await api("/api/requirements");
+  const el = $("#requirementsList");
+  if (!reqs.length) { el.innerHTML = `<div class="empty">No requirements posted yet — waiting on the Grid/DISCOM dashboard.</div>`; return; }
+  el.innerHTML = reqs.map((r) => `
+    <div class="row" style="flex-direction:column; align-items:stretch;" id="req-${r.id}">
+      <div class="row" style="background:transparent; border:none; padding:0;">
+        <div class="meta">
+          <div class="primary">${r.id}</div>
+          <div class="secondary">${r.quantity_kwh} kWh requested · ceiling ₹${r.max_price_per_kwh}/kWh</div>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span class="badge ${r.status === "PUBLISHED" ? "settled" : "waiting"}">${r.status}</span>
+          ${r.status !== "PUBLISHED" ? `<button class="secondary" onclick="recommend('${r.id}')">Recommend pool</button>` : ""}
+        </div>
+      </div>
+      <div id="req-result-${r.id}"></div>
+    </div>`).join("");
+}
+
+async function recommend(id) {
+  try {
+    const result = await api(`/api/requirements/${id}/recommend`, { method: "POST" });
+    const el = $(`#req-result-${id}`);
+    el.innerHTML = `
+      <div style="margin-top:10px; font-size:13px;">
+        <div class="secondary" style="margin-bottom:6px;">${result.note}</div>
+        <div class="list">
+          ${result.picked.map((p) => `<div class="row"><div class="secondary">${p.offerId} · ${p.sellerId} · ₹${p.pricePerKwh}/kWh · taking ${p.takeQty} kWh</div></div>`).join("") || `<div class="empty">No currently-available offers fit the price ceiling.</div>`}
+        </div>
+        ${result.picked.length ? `<button style="margin-top:8px;" onclick='applyRecommendation(${JSON.stringify(result.picked).replace(/'/g, "&#39;")}, "${id}")'>Apply recommendation to pool</button>` : ""}
+      </div>`;
+  } catch (e) { toast(`Failed: ${e.message}`); }
+}
+
+async function applyRecommendation(picked, requirementId) {
+  try {
+    for (const p of picked) {
+      await api("/api/pool/enroll", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId: p.offerId, sellerId: p.sellerId, pricePerKwh: p.pricePerKwh, qty: p.takeQty }) });
+    }
+    pendingRequirementId = requirementId;
+    toast("Recommendation applied — review the pool below, then publish");
+    await Promise.all([loadAvailable(), loadPool()]);
+  } catch (e) { toast(`Failed to apply: ${e.message}`); }
 }
 
 async function enroll(offerId, sellerId, price, qty) {
@@ -168,6 +229,18 @@ async function loadBlocks() {
   el.innerHTML = blocks.map((b) => {
     const d = b.disaggregation;
     const settled = d.status === "SETTLED";
+    let deliveryHtml = "";
+    if (b.activeTransactionId) {
+      deliveryHtml = `
+        <div class="row" style="background:transparent; border:none; padding:8px 0 0; gap:8px;">
+          <div class="field" style="width:auto;">
+            <label>Delivered kWh reading</label>
+            <input type="number" step="0.1" id="final-${b.activeTransactionId}" style="width:120px;" />
+          </div>
+          <button class="secondary" onclick="suggestDelivery('${b.activeTransactionId}')">Suggest reading</button>
+          <button onclick="reportDelivery('${b.activeTransactionId}')">Report delivery</button>
+        </div>`;
+    }
     let payoutHtml = "";
     if (settled && d.memberPayouts) {
       payoutHtml = `
@@ -190,8 +263,9 @@ async function loadBlocks() {
             <div class="primary">${b.id}</div>
             <div class="secondary">${b.total_quantity_kwh} kWh @ ₹${b.blended_price_per_kwh}/kWh · ${b.member_count} sellers pooled · margin ₹${b.margin_per_kwh}/kWh</div>
           </div>
-          <span class="badge ${settled ? "settled" : "waiting"}">${settled ? "Settled" : "Awaiting bulk buyer / delivery report"}</span>
+          <span class="badge ${settled ? "settled" : "waiting"}">${settled ? "Settled" : (b.tradeStatus || "Awaiting bulk buyer")}</span>
         </div>
+        ${deliveryHtml}
         ${payoutHtml}
       </div>`;
   }).join("");
@@ -206,11 +280,27 @@ $("#publishForm").onsubmit = async (e) => {
   e.preventDefault();
   try {
     const marginPerKwh = Number($("#margin").value) || 0.3;
-    await api("/api/pool/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marginPerKwh }) });
+    await api("/api/pool/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marginPerKwh, requirementId: pendingRequirementId }) });
     toast("Block published — discoverable by buyer-app now");
-    await Promise.all([loadPool(), loadBlocks(), loadAvailable()]);
+    pendingRequirementId = null;
+    await Promise.all([loadPool(), loadBlocks(), loadAvailable(), loadRequirements()]);
   } catch (e2) { toast(`Failed: ${e2.message}`); }
 };
+
+async function suggestDelivery(transactionId) {
+  const { suggestedFinalAlloc } = await api(`/api/deliver/${transactionId}/suggest`);
+  $(`#final-${transactionId}`).value = suggestedFinalAlloc;
+}
+
+async function reportDelivery(transactionId) {
+  try {
+    const finalAlloc = Number($(`#final-${transactionId}`).value);
+    if (!finalAlloc || finalAlloc <= 0) return toast("Enter a positive delivered kWh reading first");
+    await api(`/api/deliver/${transactionId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ finalAlloc }) });
+    toast("Delivery reported — settling…");
+    await loadBlocks();
+  } catch (e) { toast(`Failed: ${e.message}`); }
+}
 
 function connectWs() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
@@ -219,10 +309,16 @@ function connectWs() {
   ws.onmessage = (ev) => {
     const { type } = JSON.parse(ev.data);
     if (type === "pool_updated") loadPool();
-    if (type === "block_published") { loadBlocks(); loadPool(); }
-    if (type === "reset") { loadAvailable(); loadPool(); loadBlocks(); }
+    if (type === "block_published") { loadBlocks(); loadPool(); loadRequirements(); }
+    if (type === "requirement_posted") loadRequirements();
+    if (type === "reset") { loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }
   };
 }
+
+// Requirements can arrive from grid-app at any time (not pushed over this
+// app's own WebSocket since they're posted straight to the server, not
+// through a client action here) — poll the same way blocks are polled.
+setInterval(loadRequirements, 5000);
 
 // Blocks awaiting settlement are polled (the real settlement is driven by
 // seller-app's own dashboard — Accept, Report Delivery — not by anything
@@ -232,6 +328,7 @@ setInterval(loadBlocks, 5000);
 
 loadAbout();
 loadAvailable();
+loadRequirements();
 loadPool();
 loadBlocks();
 connectWs();

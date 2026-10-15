@@ -123,7 +123,14 @@ function buildDiscover() {
 // Buyer originates the whole contract object from scratch at init — this
 // is the one message in the lifecycle we build without an "original" to
 // clone, since nobody has sent us a contract yet.
-function buildInit({ offerId, quantityKwh, pricePerKwh, buyerDiscomId }) {
+// bppUri is overridable per-call (defaults to the one real seller) because
+// aggregation-v2 adds a second real catalog publisher — aggregator-app,
+// with its own onix instance at a different routing address — reusing the
+// *same* registered bppId/signing identity (sellerapp.example.com) as the
+// seller, just routed to a different container. See resolveOffer() in
+// server.js, which is what actually decides which bppUri a given offerId
+// resolves to.
+function buildInit({ offerId, quantityKwh, pricePerKwh, buyerDiscomId, bppUri }) {
   const transactionId = uuid();
   const messageId = uuid();
   const context = {
@@ -133,7 +140,7 @@ function buildInit({ offerId, quantityKwh, pricePerKwh, buyerDiscomId }) {
     bapId: SELF_ID,
     bapUri: SELF_URI,
     bppId: SELLER_ID,
-    bppUri: SELLER_URI,
+    bppUri: bppUri || SELLER_URI,
     transactionId,
     messageId,
     timestamp: nowIso(),

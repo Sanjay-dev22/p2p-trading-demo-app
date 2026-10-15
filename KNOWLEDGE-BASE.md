@@ -275,11 +275,23 @@ companions:
 5. Start a **fresh** `cloudflared tunnel --url http://localhost:8081`,
    write the URL into `buyer-app/public-bap-uri.txt`, *then* start
    `buyer-app` (order matters — it reads the file once at startup).
-6. Optionally, fresh tunnels for the two dashboards themselves
-   (`localhost:4002`, `localhost:4001`) if sharing links externally.
-7. Do one real `publish` → `discover` → `init` → `confirm` →
+6. Restart `aggregator-app` (`node server.js`, port 4003) and `grid-app`
+   (`node server.js`, port 4004) — since aggregation-v2, `onix-
+   aggregatorapp` is a real `docker compose up -d` container like the
+   others (`docker compose up -d onix-aggregatorapp beckn-router` — the
+   router needs recreating too, since the Caddy hostname alias lives on
+   it) and does **not** need its own `ONIX_*_URL` override (its host port,
+   18084, is already free by default).
+7. Optionally, fresh tunnels for the dashboards themselves
+   (`localhost:4002`, `localhost:4001`, `localhost:4003`, `localhost:4004`)
+   if sharing links externally.
+8. Do one real `publish` → `discover` → `init` → `confirm` →
    `report delivery & settle` round-trip and check the live numbers
-   reconcile (§4 math) before calling it "working."
+   reconcile (§4 math) before calling it "working." For the aggregation-v2
+   path specifically, also confirm the published block is **absent** from
+   seller-app's own `/api/offers` and present only in aggregator-app's own
+   — that's the one regression worth actually checking for, since it's the
+   whole point of the separation.
 
 ---
 
@@ -316,12 +328,14 @@ companions:
 | Devkit (sparse clone, gitignored) | `p2p-trading/DEG-repo/devkits/p2p-trading-ies-wave2/` |
 | Docker compose | `.../install/docker-compose.yml` |
 | Beckn router config | `.../install/Caddyfile` |
-| Onix app configs (allowlists, routes) | `.../config/local-p2p-trading-{sellerapp,buyerapp}.yaml` |
+| Onix app configs (allowlists, routes) | `.../config/local-p2p-trading-{sellerapp,buyerapp,aggregatorapp}.yaml` |
+| Aggregator's own routing file (new, aggregation-v2) | `.../config/local-p2p-trading-routing-AggregatorApp-BppReceiver.yaml` |
 | Local-amended policy | `.../policies/p2p-trading-ies-wave2-contractpolicy-local-amended.rego` |
 | Example payloads (ground truth for schemas) | `.../uc1/examples/*.json` |
 | Seller demo app | `p2p-trading-app/seller-app/` (`server.js`, `beckn.js`, `public/index.html`) — port 4002 |
 | Buyer demo app | `p2p-trading-app/buyer-app/` (`server.js`, `beckn.js`, `public/index.html`, `public/network.html`) — port 4001 |
-| Aggregator demo app | `p2p-trading-app/aggregator-app/` (`server.js`, `peers.js`, `public/index.html`) — port 4003, see §9 |
+| Aggregator demo app | `p2p-trading-app/aggregator-app/` (`server.js`, `beckn.js`, `peers.js`, `public/index.html`) — port 4003, own onix instance + full lifecycle since aggregation-v2, see §9 |
+| Grid/DISCOM demo app (aggregation-v2) | `p2p-trading-app/grid-app/` (`server.js`, `public/index.html`) — port 4004, REST-only, posts requirements, see §9 |
 | Public BAP URI override | `p2p-trading-app/buyer-app/public-bap-uri.txt` (gitignored, regenerate every restart) |
 | Pushed/public version of this fix | `GITHUB REPO/p2p-trading-live-demo/patches/` + its `README.md` |
 
@@ -651,6 +665,108 @@ same shape as Gap 7.
    No frontend changes were needed — all three dashboards already read
    `body.error` correctly; they were just never given the real message to
    show.
+
+### Aggregation v2 (2026-10-15): real separation + demand-driven matching + Grid/DISCOM
+
+Built after actually using the v1 aggregator-app dashboard surfaced three
+real architectural problems, not just UI polish: the pooled block showed up
+**inside seller-app's own dashboard** (because v1 published it through
+seller-app's own `/api/publish`, which also wrote it into seller-app's own
+catalog DB); it was unclear who should own the block's lifecycle afterwards
+(v1 routed accept/deliver back through seller-app); and pooling was
+**supply-first and arbitrary** — pool whatever small offers exist, publish,
+hope a buyer appears, with nothing representing the large-buyer/grid side
+distinctly from an ordinary P2P buyer.
+
+Verified via web research before redesigning, not guessed: **FERC Order
+2222** (US DER aggregation into wholesale markets) and **Piclo Flex** (UK
+flexibility market) both confirm real aggregation is **demand-first** (a
+grid/large-buyer posts a requirement; the aggregator matches pooled
+resources against it) and that individual small resources never transact
+directly in the market — only the aggregator's bundled offer does, under
+the aggregator's own distinct identity.
+
+**The separation mechanism — no new DeDi registration needed.** Beckn
+separates `bpp_id` (the signing/registry identity) from `bppUri` (just a
+routing address). `onix-aggregatorapp` is a brand-new, independent onix
+adapter container (`install/docker-compose.yml`,
+`config/local-p2p-trading-aggregatorapp.yaml`) that **reuses
+`sellerapp.example.com`'s already-registered signing keys verbatim** — the
+same `keyId`/`signingPrivateKey` as `onix-sellerapp` — so no new DeDi
+subscriber record or namespace-owner approval was needed (confirmed
+required only for a genuinely new identity, per
+`ies-devkit/devkits/README.md`'s "Create DeDi registry records... Ask the
+network namespace owner"). Only the *routing* is new: a new Caddy hostname
+`aggregatorapp.example.com` (`install/Caddyfile`) pointing at
+`onix-aggregatorapp`, and a new routing file
+(`config/local-p2p-trading-routing-AggregatorApp-BppReceiver.yaml`)
+forwarding incoming select/init/confirm/status to aggregator-app's own
+process (`host.docker.internal:4003/api/webhook`) instead of seller-app's.
+`aggregator-app/beckn.js` is a new file (adapted from seller-app's) that
+publishes and signs through this instance directly — the block is
+genuinely aggregator-app's own catalog entry from the moment it's
+published; seller-app never sees it again.
+
+**One load-bearing fix this required in `buyer-app`, found while wiring it
+up:** `buyer-app/beckn.js`'s `buildInit()` **hardcoded** the seller's
+`bppId`/`bppUri` for every purchase — harmless while there was only ever
+one real seller identity, but it would have silently routed every `init`
+to `onix-sellerapp` regardless of which onix instance actually published
+the offer, meaning the whole separation would have been invisible to the
+buy-side. Fixed by making `bppUri` an override parameter (`bppId` itself
+stays `sellerapp.example.com` either way — that's the shared signing
+identity, not the routing target), and having `resolveOffer()` in
+`buyer-app/server.js` check **both** seller-app's and aggregator-app's own
+live catalogs (`/api/offers`) before falling back to the stale
+`discovered_offers` cache, returning the right `bppUri` for whichever one
+actually has the offer.
+
+**aggregator-app now owns the block's entire real lifecycle itself** —
+its own `/api/webhook/:action` (init auto-accepted, since the block's
+price was already fixed at publish time — no counter-offer feature here,
+a disclosed simplification), its own `computeSettlement` (identical
+formula to seller-app's, duplicated for the same reason: no way to read
+the real policy result back synchronously), its own `/api/deliver`, and
+its own `remaining_qty` on the `blocks` table (decremented when a bulk
+buyer's init is accepted) — so the block itself can't be double-sold. This
+does **not** fix the one-level-down gap: the original pooled small offers
+on seller-app's own catalog still aren't reserved the moment they're
+pooled (see risk #1 above — confirmed still present, unchanged, by design
+for this phase).
+
+**Demand-driven matching (Grid/DISCOM → aggregator-app → buyer-app):** a
+new `requirements` table + `POST /api/requirements` (posted by the new
+`grid-app`, port 4004 — REST-only, no onix identity of its own in this
+phase) and `POST /api/requirements/:id/recommend`, which runs a
+cheapest-first greedy fill against currently-discoverable real offers, up
+to the requirement's quantity, never above its price ceiling, and clearly
+flags a shortfall rather than silently proposing a partial match as
+complete. The operator still reviews and applies the recommendation
+manually (enrolling each picked offer through the existing, already-
+verified `/api/pool/enroll`) before publishing — human-in-the-loop
+preserved, same as v1's manual pooling. `grid-app` only posts the
+requirement; `buyer-app` still executes the real discover/buy/confirm for
+the resulting block, unchanged. Giving Grid/DISCOM its own onix identity
+to buy directly (mirroring FERC-2222's RTO/ISO-as-buyer more literally) is
+a clean, separately-schedulable later phase — nothing built here needs to
+be undone to get there.
+
+**Verified live, full round trip (2026-10-15):** seller-app published 3
+fresh offers; `grid-app` posted a requirement (20 kWh, ≤₹13/kWh);
+`recommend` greedily matched 2 leftover ₹10/kWh offers + the ₹11.50 offer
++ 3 kWh of the ₹12 offer = exactly 20 kWh, blended ₹10.75, all within
+ceiling; published as `offer-agg-ecebfa3e` at ₹11.05/kWh (blended + ₹0.30
+margin) — confirmed **absent** from seller-app's own `/api/offers` and
+present only in aggregator-app's own; buyer-app discovered it with the
+correct captured `bpp_uri` (`http://aggregatorapp.example.com:9000/bpp/
+receiver`); `init`/`confirm` both landed on aggregator-app's own webhook
+(confirmed in its logs), never seller-app's; delivery reported at 19.2 of
+20 kWh requested, settled at ₹200.56 (hand-verified exact: tradeValue
+212.16 − wheelingSeller 9.6 − penalty 2.0); disaggregated to the 4 pooled
+sellers at ₹54.72 / ₹45.60 / ₹63.36 / ₹33.12 (sum ₹196.80, hand-verified
+exact against each member's own original price × 0.96 delivery ratio),
+aggregator margin realized ₹3.76; `grid-app`'s requirement correctly shows
+`PUBLISHED`, linked to the real block id.
 
 ---
 

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Grid/DISCOM Platform — P2P Trading Demo</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121822; --panel2: #182233; --border: #263349;
+    --text: #e8edf5; --muted: #8fa1bd; --accent: #a67cf0; --good: #2fe0c6; --red: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: 0.02em; }
+  header .role { color: var(--accent); font-weight: 600; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px; display: grid; gap: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 14px; }
+  .panel p.hint { font-size: 12px; color: var(--muted); margin: -8px 0 14px; }
+  button { background: var(--accent); color: #140a2b; border: none; border-radius: 6px; padding: 9px 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .list { display: flex; flex-direction: column; gap: 10px; }
+  .row { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .row .meta { display: flex; flex-direction: column; gap: 2px; }
+  .row .meta .primary { font-weight: 600; }
+  .row .meta .secondary { font-size: 12px; color: var(--muted); }
+  .badge { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .badge.published { background: rgba(47,224,198,0.25); color: var(--good); }
+  .badge.recommended { background: rgba(166,124,240,0.2); color: var(--accent); }
+  .badge.pending { background: rgba(143,161,189,0.15); color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel2); border: 1px solid var(--accent); color: var(--text); padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transform: translateY(8px); transition: all 0.25s; pointer-events: none; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--muted); }
+  .field input { background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; width: 160px; font-size: 14px; }
+  form.post-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .role-banner { background: rgba(166,124,240,0.08); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: var(--muted); margin: 0 0 20px; }
+  .role-banner b { color: var(--text); }
+  .role-banner-line { margin: 0 0 8px; }
+  .role-banner-line:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Grid/DISCOM Platform <span class="role">— posts bulk energy requirements</span></h1>
+</header>
+<main>
+
+  <div class="role-banner">
+    <div class="role-banner-line"><b>Your role:</b> a grid operator / DISCOM representing bulk demand — the entity aggregation exists to serve.</div>
+    <div class="role-banner-line"><b>Your job:</b> post a requirement (how much energy you need, and the most you'll pay per kWh) and watch aggregator-app match and fulfill it.</div>
+    <div class="role-banner-line"><b>What you don't do (in this phase):</b> you don't execute the actual purchase yourself — buyer-app does that against the block aggregator-app publishes once it has matched your requirement. See KNOWLEDGE-BASE.md's aggregation-v2 section for why, and what a later phase giving you that directly would look like.</div>
+  </div>
+
+  <div class="panel">
+    <h2>Post a requirement</h2>
+    <p class="hint">Demand-first, same shape real aggregation markets use (FERC Order 2222's RTO/ISO side, UK's Piclo Flex DSO side): state what you need before anyone pools anything, rather than pooling first and hoping a buyer appears.</p>
+    <form class="post-form" id="postForm">
+      <div class="field"><label>Quantity needed (kWh)</label><input type="number" step="0.1" id="qty" required /></div>
+      <div class="field"><label>Max price (₹/kWh)</label><input type="number" step="0.01" id="maxPrice" required /></div>
+      <button type="submit">Post requirement</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Your requirements</h2>
+    <div class="list" id="reqList"></div>
+  </div>
+
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+const toast = (msg) => { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2800); };
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  const json = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+  return json;
+}
+
+function badgeClass(status) {
+  if (status === "PUBLISHED") return "published";
+  if (status === "RECOMMENDED") return "recommended";
+  return "pending";
+}
+
+async function loadRequirements() {
+  const reqs = await api("/api/requirements");
+  const el = $("#reqList");
+  if (!reqs.length) { el.innerHTML = `<div class="empty">No requirements posted yet.</div>`; return; }
+  el.innerHTML = reqs.map((r) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary">${r.id}</div>
+        <div class="secondary">${r.quantity_kwh} kWh needed · ceiling ₹${r.max_price_per_kwh}/kWh${r.block_id ? ` · fulfilled by block ${r.block_id}` : ""}</div>
+      </div>
+      <span class="badge ${badgeClass(r.status)}">${r.status}</span>
+    </div>`).join("");
+}
+
+$("#postForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const quantityKwh = Number($("#qty").value);
+    const maxPricePerKwh = Number($("#maxPrice").value);
+    await api("/api/requirements", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ quantityKwh, maxPricePerKwh }) });
+    toast("Requirement posted — aggregator-app can now match it");
+    e.target.reset();
+    await loadRequirements();
+  } catch (err) { toast(`Failed: ${err.message}`); }
+};
+
+setInterval(loadRequirements, 4000);
+loadRequirements();
+</script>
+</body>
+</html>
