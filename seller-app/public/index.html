@@ -76,12 +76,13 @@
 <header>
   <h1>⚡ <span class="role">Seller Platform</span> — sellerapp.example.com</h1>
   <div style="display:flex;align-items:center;gap:16px">
-    <div class="earnings">
+    <div class="earnings" style="cursor:pointer" onclick="openWalletHistory('Wallet · seller earnings')" title="Click for transaction history">
       <div class="amt" id="earnings">₹0.00</div>
-      <div class="lbl">Earnings (settled)</div>
+      <div class="lbl" id="earningsLbl">Wallet · earnings (settled)</div>
+      <div class="lbl" id="earningsSub" style="text-transform:none;letter-spacing:0"></div>
     </div>
     <span style="color:var(--muted);font-size:12px" title="The full cross-network view (every participant's offers + our ledger-verified trades) lives on the Buyer Platform, which is the side that runs discover">🌐 Network Dashboard: see Buyer Platform's /network.html</span>
-    <button class="secondary" id="resetBtn" title="Wipe this platform's own offers and trades">Reset demo</button>
+    <button class="secondary" id="resetBtn" title="Wipe all four dashboards (Seller, Buyer, Aggregator, Grid) for a fresh run">Reset demo</button>
   </div>
 </header>
 <div class="role-banner">
@@ -112,6 +113,12 @@
   <div class="panel">
     <h2>Active &amp; settled trades</h2>
     <div class="list" id="trades"><div class="empty">No trades yet.</div></div>
+  </div>
+
+  <div class="panel">
+    <h2>Payouts from aggregator pools</h2>
+    <p class="secondary" style="margin:0 0 8px">When an aggregator pooled one of your offers and the bulk buyer's trade settles, your own share is credited here — priced at YOUR offer's price, minus wheeling and minus a penalty only if YOUR meter under-delivered.</p>
+    <div class="list" id="payouts"><div class="empty">No pooled-block payouts yet.</div></div>
   </div>
 </main>
 <div class="toast" id="toast"></div>
@@ -165,10 +172,11 @@ let lastRequestsJson = "";
 let lastTradesJson = "";
 
 async function refreshAll(force) {
-  const [offers, trades, earnings] = await Promise.all([
+  const [offers, trades, earnings, payouts] = await Promise.all([
     fetch("/api/offers").then((r) => r.json()),
     fetch("/api/trades").then((r) => r.json()),
     fetch("/api/earnings").then((r) => r.json()),
+    fetch("/api/payouts").then((r) => r.json()).catch(() => []),
   ]);
   renderOffers(offers);
   const offersById = Object.fromEntries(offers.map((o) => [o.id, o]));
@@ -179,6 +187,16 @@ async function refreshAll(force) {
   if (force || reqJson !== lastRequestsJson) { lastRequestsJson = reqJson; await renderRequests(requests, offersById); }
   if (force || tradeJson !== lastTradesJson) { lastTradesJson = tradeJson; await renderTrades(settledOrActive); }
   $("#earnings").textContent = "₹" + Number(earnings.total).toFixed(2);
+  $("#earningsSub").textContent = `direct ₹${Number(earnings.direct).toFixed(2)} · pooled ₹${Number(earnings.pooled).toFixed(2)}` + (earnings.inEscrow > 0 ? ` · ₹${Number(earnings.inEscrow).toFixed(2)} pending delivery` : "");
+  const pe = $("#payouts");
+  pe.innerHTML = payouts.length ? payouts.map((p) => `
+    <div class="row">
+      <div class="meta">
+        <div class="primary" style="font-family:monospace">${p.offer_id} <span style="color:var(--muted);font-weight:400">· block ${p.block_id || "?"}</span></div>
+        <div class="secondary">${p.delivered_kwh} of ${p.allocated_kwh} kWh delivered · gross ₹${Number(p.gross).toFixed(2)} − wheeling ₹${Number(p.wheeling).toFixed(2)}${p.penalty > 0 ? ` − shortfall penalty ₹${Number(p.penalty).toFixed(2)}` : ""}</div>
+      </div>
+      <span class="badge ${p.net >= 0 ? "settled" : "declined"}">${p.net >= 0 ? "+" : "−"}₹${Math.abs(p.net).toFixed(2)}</span>
+    </div>`).join("") : '<div class="empty">No pooled-block payouts yet.</div>';
 }
 
 function renderOffers(list) {
@@ -362,14 +380,18 @@ $("#publishForm").addEventListener("submit", async (e) => {
   toast(`Published ${body.quantityKwh} kWh @ ₹${body.pricePerKwh}/kWh`);
 });
 
-$("#resetBtn").addEventListener("click", async () => {
-  if (!confirm("Wipe every offer and trade on this Seller Platform? This can't be undone. (The Buyer Platform's own data is separate — reset it there too if you want a fully clean pair.)")) return;
-  const res = await fetch("/api/reset", { method: "POST" });
-  const body = await res.json();
-  if (!res.ok) { toast("Reset failed: " + (body.error || res.status)); return; }
-  toast("Seller Platform reset — starting fresh");
-  refreshAll();
-});
+$("#resetBtn").addEventListener("click", () => resetDemo(() => refreshAll()));
+async function resetDemo(afterReset) {
+  if (!confirm("Reset the WHOLE demo? This wipes every offer, pool, block, requirement and trade on ALL FOUR dashboards (Seller, Buyer, Aggregator, Grid/DISCOM). It can't be undone.")) return;
+  try {
+    const res = await fetch("/api/reset-all", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { toast("Reset failed: " + (body.error || res.status)); return; }
+    const bad = Object.entries(body.results || {}).filter(([, v]) => v !== "ok");
+    toast(bad.length ? "Reset partly done — " + bad.map(([k, v]) => k + ": " + v).join("; ") : "Whole demo reset — all four dashboards are clean");
+  } catch (e) { toast("Reset failed: " + (e.message || e)); }
+  if (afterReset) afterReset();
+}
 
 function connectWs() {
   // Match the page's own protocol: a page loaded over https:// (e.g.
@@ -398,5 +420,6 @@ connectWs();
 refreshAll();
 setInterval(refreshAll, 5000);
 </script>
+<script src="/wallet.js"></script>
 </body>
 </html>

@@ -1,0 +1,395 @@
+appName: "onix-local"
+log:
+  level: debug
+  destinations:
+    - type: stdout
+  contextKeys:
+    - transaction_id
+    - message_id
+    - subscriber_id
+    - module_id
+http:
+  port: 8082
+  timeout:
+    read: 30
+    write: 30
+    idle: 30
+pluginManager:
+  root: ./plugins
+modules:
+  # /bpp/receiver — receives select/init/confirm/status/update/cancel
+  # requests from buyer-app for the aggregator's own pooled block. This is
+  # the only module whose routing target differs from onix-sellerapp:
+  # it forwards to aggregator-app's own process (port 4003), not
+  # seller-app's (port 4002) — this is what gives the aggregator's block
+  # its own independent lifecycle instead of living inside seller-app's
+  # catalog/DB. Reuses sellerapp.example.com's already-registered signing
+  # identity below (same keys as onix-sellerapp) — no new DeDi
+  # registration; only the routing target is new.
+  - name: bppTxnReceiver
+    path: /bpp/receiver/
+    handler:
+      type: std
+      role: bpp
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        registry:
+          id: dediregistry
+          config:
+            registryName: subscribers.beckn.one
+            allowedNetworkIDs: "indiaenergystack.in/test-ies-p2p-trading-network,nfh.global/testnet-deg"
+            timeout: 10
+        keyManager:
+          id: simplekeymanager
+          config:
+            networkParticipant: sellerapp.example.com
+            keyId: 76EU9BVtj4VYcQvBdpDr84T6AbiLe2PkBdJLaJRBUsZnFgD8joffqz
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "172800"
+            extendedSchema_enabled: "true"
+            extendedSchema_cacheTTL: "172800"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.nfh.global"
+        checkPolicy:
+          id: opapolicychecker
+          config:
+            networkPolicyConfig: ./config/opa-network-policies.yaml
+            refreshInterval: "24h"
+        cache:
+          id: cache
+          config:
+            addr: redis:6379
+        signValidator:
+          id: signvalidator
+        router:
+          id: router
+          config:
+            routingConfig: ./config/local-p2p-trading-routing-AggregatorApp-BppReceiver.yaml
+        middleware:
+          - id: reqpreprocessor
+            config:
+              uuidKeys: transaction_id,message_id
+              role: bpp
+        steps:
+          - id: contractpolicyenforcer
+            config:
+              actions: "select,init,confirm"
+              violationActions: "select,init,confirm"
+              cacheTTL: "172800"
+              debugLogging: "true"
+              allowedPolicyUrlPrefixes: "https://api.dedi.global/dedi/lookup/indiaenergystack.in,http://host.docker.internal:8099"
+              fetchRetries: "2"
+              outputPath: "message.contract.consideration[id=auto-settlement-flows].considerationAttributes"
+              outputMode: "jsonld"
+              outputType: "RevenueFlow"
+              outputContextURL: "https://schema.nfh.global/RevenueFlow/v2.0/context.jsonld"
+              outputArrayKey: "revenueFlows"
+              entryDefaults: '{"status":{"code":"SETTLED"}}'
+          - id: degledgerrecorder
+            config:
+              payloadShape: wave2
+              ledgerUriSource: payload
+              ledgerApi: beckn
+              role: SELLER
+              actions: status
+              enabled: "true"
+              asyncTimeout: "30000"
+              retryCount: "3"
+              retryMaxTTL: "10m"
+              retryBackoff: "5s"
+              signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+              networkParticipant: sellerapp.example.com
+              keyId: 76EU9BVtj4VYcQvBdpDr84T6AbiLe2PkBdJLaJRBUsZnFgD8joffqz
+      steps:
+        - validateSign
+        - checkPolicy
+        - addRoute
+        - validateSchema
+        - contractpolicyenforcer
+        - degledgerrecorder
+
+  # /bap/receiver — same role as onix-sellerapp's own module. This path is
+  # not exercised by the main live flow today (onix-sellerapp's own copy
+  # still points at the original sandbox stub, unused but harmless) so it
+  # is reused as-is via the identical seller routing file rather than
+  # duplicated — nothing here is aggregator-specific.
+  - name: bapTxnReceiver
+    path: /bap/receiver/
+    handler:
+      type: std
+      role: bap
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        registry:
+          id: dediregistry
+          config:
+            registryName: subscribers.beckn.one
+            allowedNetworkIDs: "indiaenergystack.in/test-ies-p2p-trading-network,nfh.global/testnet-deg"
+            timeout: 10
+        keyManager:
+          id: simplekeymanager
+          config:
+            networkParticipant: sellerapp.example.com
+            keyId: 76EU9BVtj4VYcQvBdpDr84T6AbiLe2PkBdJLaJRBUsZnFgD8joffqz
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "172800"
+            extendedSchema_enabled: "true"
+            extendedSchema_cacheTTL: "172800"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.nfh.global"
+        checkPolicy:
+          id: opapolicychecker
+          config:
+            networkPolicyConfig: ./config/opa-network-policies.yaml
+            refreshInterval: "24h"
+        cache:
+          id: cache
+          config:
+            addr: redis:6379
+        signValidator:
+          id: signvalidator
+        router:
+          id: router
+          config:
+            routingConfig: ./config/local-p2p-trading-routing-SellerApp-BapReceiver.yaml
+        middleware:
+          - id: reqpreprocessor
+            config:
+              uuidKeys: transaction_id,message_id
+              role: bap
+        steps:
+          - id: contractpolicyenforcer
+            config:
+              actions: "on_status"
+              violationActions: ""
+              cacheTTL: "172800"
+              debugLogging: "true"
+              allowedPolicyUrlPrefixes: "https://api.dedi.global/dedi/lookup/indiaenergystack.in,http://host.docker.internal:8099"
+              fetchRetries: "2"
+              outputPath: "message.contract.consideration[id=auto-settlement-flows].considerationAttributes"
+              outputMode: "jsonld"
+              outputType: "RevenueFlow"
+              outputContextURL: "https://schema.nfh.global/RevenueFlow/v2.0/context.jsonld"
+              outputArrayKey: "revenueFlows"
+              entryDefaults: '{"status":{"code":"SETTLED"}}'
+          - id: degledgerrecorder
+            config:
+              payloadShape: wave2
+              ledgerUriSource: payload
+              ledgerApi: beckn
+              role: SELLER
+              actions: on_status
+              enabled: "true"
+              asyncTimeout: "30000"
+              retryCount: "3"
+              retryMaxTTL: "10m"
+              retryBackoff: "5s"
+              signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+              networkParticipant: sellerapp.example.com
+              keyId: 76EU9BVtj4VYcQvBdpDr84T6AbiLe2PkBdJLaJRBUsZnFgD8joffqz
+      steps:
+        - validateSign
+        - checkPolicy
+        - addRoute
+        - validateSchema
+        - contractpolicyenforcer
+        - degledgerrecorder
+
+  # /bpp/caller — publishes the pooled block catalog + sends on_status
+  # outbound. Reuses seller's own BppCaller routing file as-is: it
+  # resolves targets dynamically (BAP adapter via registry, or the fabric
+  # URL for catalog actions), nothing app-port-specific to change.
+  - name: bppTxnCaller
+    path: /bpp/caller/
+    handler:
+      type: std
+      role: bpp
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        registry:
+          id: dediregistry
+          config:
+            registryName: subscribers.beckn.one
+            allowedNetworkIDs: "indiaenergystack.in/test-ies-p2p-trading-network,nfh.global/testnet-deg"
+            timeout: 10
+        keyManager:
+          id: simplekeymanager
+          config:
+            networkParticipant: sellerapp.example.com
+            keyId: 76EU9BVtj4VYcQvBdpDr84T6AbiLe2PkBdJLaJRBUsZnFgD8joffqz
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "172800"
+            extendedSchema_enabled: "true"
+            extendedSchema_cacheTTL: "172800"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.nfh.global"
+        checkPolicy:
+          id: opapolicychecker
+          config:
+            networkPolicyConfig: ./config/opa-network-policies.yaml
+            refreshInterval: "24h"
+        cache:
+          id: cache
+          config:
+            addr: redis:6379
+        router:
+          id: router
+          config:
+            routingConfig: ./config/local-p2p-trading-routing-SellerApp-BppCaller.yaml
+        signer:
+          id: signer
+        middleware:
+          - id: reqpreprocessor
+            config:
+              uuidKeys: transaction_id,message_id
+              role: bpp
+        steps:
+          - id: contractpolicyenforcer
+            config:
+              actions: "publish,on_status"
+              violationActions: "publish"
+              cacheTTL: "172800"
+              debugLogging: "true"
+              allowedPolicyUrlPrefixes: "https://api.dedi.global/dedi/lookup/indiaenergystack.in,http://host.docker.internal:8099"
+              fetchRetries: "2"
+              outputPath: "message.contract.consideration[id=auto-settlement-flows].considerationAttributes"
+              outputMode: "jsonld"
+              outputType: "RevenueFlow"
+              outputContextURL: "https://schema.nfh.global/RevenueFlow/v2.0/context.jsonld"
+              outputArrayKey: "revenueFlows"
+              entryDefaults: '{"status":{"code":"SETTLED"}}'
+          - id: degledgerrecorder
+            config:
+              payloadShape: wave2
+              ledgerUriSource: payload
+              ledgerApi: beckn
+              role: SELLER
+              actions: on_confirm
+              enabled: "true"
+              asyncTimeout: "30000"
+              retryCount: "3"
+              retryMaxTTL: "10m"
+              retryBackoff: "5s"
+              signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+              networkParticipant: sellerapp.example.com
+              keyId: 76EU9BVtj4VYcQvBdpDr84T6AbiLe2PkBdJLaJRBUsZnFgD8joffqz
+      steps:
+        - contractpolicyenforcer
+        - validateSchema
+        - checkPolicy
+        - addRoute
+        - sign
+        - degledgerrecorder
+
+  # /bap/caller — seller-initiated sub-transactions. Reuses seller's own
+  # BapCaller routing file as-is (resolves context.bppId via registry,
+  # nothing app-port-specific).
+  - name: bapTxnCaller
+    path: /bap/caller/
+    handler:
+      type: std
+      role: bap
+      httpClientConfig:
+        maxIdleConns: 1000
+        maxIdleConnsPerHost: 200
+        idleConnTimeout: 300s
+        responseHeaderTimeout: 30s
+      plugins:
+        registry:
+          id: dediregistry
+          config:
+            registryName: subscribers.beckn.one
+            allowedNetworkIDs: "indiaenergystack.in/test-ies-p2p-trading-network,nfh.global/testnet-deg"
+            timeout: 10
+        keyManager:
+          id: simplekeymanager
+          config:
+            networkParticipant: sellerapp.example.com
+            keyId: 76EU9BVtj4VYcQvBdpDr84T6AbiLe2PkBdJLaJRBUsZnFgD8joffqz
+            signingPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            signingPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+            encrPrivateKey: TTQMAEy0xJcoRXRNofZAwZq1c3VH6j98UUaHP7budQQ=
+            encrPublicKey: g/3swjI93IhZ0SScrVZapeLjU+W0AeiSid3LViYZJFo=
+        schemaValidator:
+          id: schemav2validator
+          config:
+            cacheTTL: "172800"
+            extendedSchema_enabled: "true"
+            extendedSchema_cacheTTL: "172800"
+            extendedSchema_maxCacheSize: "100"
+            extendedSchema_downloadTimeout: "30"
+            extendedSchema_allowedDomains: "raw.githubusercontent.com,schema.nfh.global"
+        checkPolicy:
+          id: opapolicychecker
+          config:
+            networkPolicyConfig: ./config/opa-network-policies.yaml
+            refreshInterval: "24h"
+        cache:
+          id: cache
+          config:
+            addr: redis:6379
+        router:
+          id: router
+          config:
+            routingConfig: ./config/local-p2p-trading-routing-SellerApp-BapCaller.yaml
+        signer:
+          id: signer
+        middleware:
+          - id: reqpreprocessor
+            config:
+              uuidKeys: transaction_id,message_id
+              role: bap
+        steps:
+          - id: contractpolicyenforcer
+            config:
+              actions: "status"
+              violationActions: ""
+              cacheTTL: "172800"
+              debugLogging: "true"
+              allowedPolicyUrlPrefixes: "https://api.dedi.global/dedi/lookup/indiaenergystack.in,http://host.docker.internal:8099"
+              fetchRetries: "2"
+              outputPath: "message.contract.consideration[id=auto-settlement-flows].considerationAttributes"
+              outputMode: "jsonld"
+              outputType: "RevenueFlow"
+              outputContextURL: "https://schema.nfh.global/RevenueFlow/v2.0/context.jsonld"
+              outputArrayKey: "revenueFlows"
+              entryDefaults: '{"status":{"code":"SETTLED"}}'
+      steps:
+        - contractpolicyenforcer
+        - validateSchema
+        - checkPolicy
+        - addRoute
+        - sign

@@ -47,6 +47,23 @@ db.exec(`
     at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_events_txn ON events(transaction_id);
+
+  -- Money credited to this seller by an aggregator when a pooled block that
+  -- contained one of this seller's offers settled. Direct sales live in
+  -- trades; these never do (the buyer only ever dealt with the aggregator).
+  CREATE TABLE IF NOT EXISTS payouts (
+    transaction_id TEXT NOT NULL,
+    offer_id TEXT NOT NULL,
+    block_id TEXT,
+    allocated_kwh REAL,
+    delivered_kwh REAL,
+    gross REAL,
+    wheeling REAL,
+    penalty REAL,
+    net REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (transaction_id, offer_id)
+  );
 `);
 
 // Lightweight migration for trades tables created before negotiation

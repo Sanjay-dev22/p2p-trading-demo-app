@@ -57,6 +57,10 @@ for (const stmt of [
   "ALTER TABLE trades ADD COLUMN seller_price_per_kwh REAL",
   "ALTER TABLE trades ADD COLUMN seller_qty REAL",
   "ALTER TABLE trades ADD COLUMN decline_reason TEXT",
+  // Delivered kWh and the network's own settlement statement, kept so the
+  // wallet history can show the full calculation behind what was paid.
+  "ALTER TABLE trades ADD COLUMN final_alloc REAL",
+  "ALTER TABLE trades ADD COLUMN settlement_note TEXT",
   // bpp_uri: the *catalog's* own routing endpoint for whoever published this
   // offer — not part of the offer object itself, so it has to be captured
   // separately at discovery time (see server.js's webhook handler) or it's

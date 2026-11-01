@@ -63,7 +63,8 @@
 <body>
 <header>
   <h1>Aggregator Platform <span class="role">— pools small sellers into one block</span></h1>
-  <span class="conn down" id="conn">connecting…</span>
+  <div style="display:flex;align-items:center;gap:16px"><div id="wallet" onclick="openWalletHistory('Wallet · aggregator margin')" title="Click for transaction history. Received from bulk buyers minus paid out to pooled sellers" style="text-align:right;line-height:1.2;cursor:pointer"><div id="walletAmt" style="font-size:22px;font-weight:700;color:var(--accent,#7ee0a1)">₹0.00</div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">Wallet · margin kept (settled)</div><div id="walletSub" style="font-size:11px;color:var(--muted)"></div></div><span class="conn down" id="conn">connecting…</span>
+  <button class="secondary" id="resetBtn" title="Wipe all four dashboards (Seller, Buyer, Aggregator, Grid) for a fresh run">Reset demo</button></div>
 </header>
 <main>
 
@@ -75,9 +76,9 @@
   </div>
 
   <div class="panel">
-    <h2>1 · Discover real offers to pool</h2>
-    <p class="hint">Asks buyer-app to run a real discover, then lists what it actually found on the shared network. Not a simulation.</p>
-    <button id="btnDiscover">Discover offers</button>
+    <h2>1 · Available offers to pool</h2>
+    <p class="hint">Live from the Seller Platform's own catalog — a new offer appears here within a few seconds of the seller publishing it, and an offer disappears once it is pooled or sold. No buyer platform involved.</p>
+    <button id="btnDiscover">Refresh offers</button>
     <div class="list" id="availableList" style="margin-top:14px"></div>
   </div>
 
@@ -95,15 +96,17 @@
       <div class="stat"><div class="num" id="poolCount">0</div><div class="lbl">sellers pooled</div></div>
     </div>
     <div class="list" id="poolList"></div>
+    <div id="poolCalc" class="hint" style="margin-top:12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.6;display:none"></div>
     <form class="publish-form" id="publishForm" style="margin-top:16px">
       <div class="field"><label>Aggregator margin (₹/kWh)</label><input type="number" step="0.01" id="margin" value="0.30" /></div>
+      <div class="field"><label>Serve requirement</label><select id="publishFor"><option value="">None — open-market block</option></select></div>
       <button type="submit" id="btnPublish">Publish pooled block</button>
     </form>
   </div>
 
   <div class="panel">
     <h2>4 · Published blocks, delivery & disaggregation</h2>
-    <p class="hint">Once the bulk buyer (buyer-app) buys it, this block's lifecycle (accept, confirm, delivery, settlement) is this app's own — not seller-app's, and the small pooled sellers are never involved again. Report delivery here once the trade is Active; the real settlement amount then appears, split back to each pooled seller at THEIR OWN original price, with the aggregator's margin shown explicitly.</p>
+    <p class="hint">Once the bulk buyer (the Grid/DISCOM) buys it, this block's lifecycle (accept, confirm, delivery, settlement) is this app's own — not seller-app's, and the small pooled sellers are never involved again. Report delivery here once the trade is Active; the real settlement amount then appears, split back to each pooled seller at THEIR OWN original price, with the aggregator's margin shown explicitly.</p>
     <div class="list" id="blocksList"></div>
   </div>
 
@@ -119,6 +122,7 @@
 const $ = (sel) => document.querySelector(sel);
 const toast = (msg) => { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 2800); };
 const money = (n) => n == null ? "—" : `₹${Number(n).toFixed(2)}`;
+const round = (n) => Math.round(n * 100) / 100;
 // Set when "Apply recommendation" enrolls a requirement's matched offers —
 // carried through to /api/pool/publish so that requirement gets marked
 // PUBLISHED and linked to the resulting block id.
@@ -139,7 +143,7 @@ async function loadAbout() {
 async function loadAvailable() {
   const offers = await api("/api/available-offers");
   const el = $("#availableList");
-  if (!offers.length) { el.innerHTML = `<div class="empty">No undiscovered-or-unpooled offers right now. Click Discover, or everything found is already in the pool below.</div>`; return; }
+  if (!offers.length) { el.innerHTML = `<div class="empty">No unpooled offers right now — waiting for sellers to publish (or everything is already pooled).</div>`; return; }
   el.innerHTML = offers.map((o) => `
     <div class="row">
       <div class="meta">
@@ -177,13 +181,31 @@ function renderRecommendationResult(id) {
     </div>`;
 }
 
+// The "Serve requirement" picker on the publish form. Publishing used to link
+// a block to a requirement only through hidden in-page state set by "Apply
+// recommendation to pool", so a hand-built pool (or a page reload) produced a
+// block the Grid could never see. Now it is an explicit, visible choice.
+let openRequirements = [];
+let publishForChoice = null; // null = operator hasn't chosen; "" = explicitly none
+function syncPublishFor(reqs) {
+  const sel = $("#publishFor");
+  const open = reqs.filter((r) => r.status !== "FULFILLED");
+  const remembered = publishForChoice !== null ? publishForChoice : (pendingRequirementId || (open.length === 1 ? open[0].id : ""));
+  sel.innerHTML = `<option value="">None — open-market block</option>` + open.map((r) => {
+    const left = Math.max(0, Math.round((r.quantity_kwh - (r.published_qty || 0)) * 100) / 100);
+    return `<option value="${r.id}">${r.id} — ${r.quantity_kwh} kWh @ ≤ ₹${r.max_price_per_kwh}${(r.published_qty || 0) > 0 ? ` (${left} kWh not yet covered)` : ""}</option>`;
+  }).join("");
+  sel.value = open.some((r) => r.id === remembered) ? remembered : "";
+}
+$("#publishFor").onchange = (e) => { publishForChoice = e.target.value; };
+
 async function loadRequirements() {
   const reqs = await api("/api/requirements");
   const el = $("#requirementsList");
-  if (!reqs.length) { el.innerHTML = `<div class="empty">No requirements posted yet — waiting on the Grid/DISCOM dashboard.</div>`; return; }
+  if (!reqs.length) { el.innerHTML = `<div class="empty">No requirements posted yet — waiting on the Grid/DISCOM dashboard.</div>`; syncPublishFor([]); return; }
   el.innerHTML = reqs.map((r) => {
     const bought = r.fulfilled_qty || 0;
-    const progress = bought > 0 ? ` · ${bought} of ${r.quantity_kwh} kWh bought so far` : "";
+    const progress = (r.published_qty > 0 ? ` · ${r.published_qty} kWh published in blocks` : "") + (bought > 0 ? ` · ${bought} of ${r.quantity_kwh} kWh bought so far` : "");
     // "Recommend pool" stays available for anything short of FULFILLED —
     // including an already-PUBLISHED requirement whose first block only
     // partly covered it (a late-arriving seller's offer, found hours later,
@@ -205,6 +227,8 @@ async function loadRequirements() {
       <div id="req-result-${r.id}"></div>
     </div>`;
   }).join("");
+  openRequirements = reqs.filter((r) => r.status !== "FULFILLED");
+  syncPublishFor(reqs);
   // Re-paint any recommendation this refresh just wiped from the DOM.
   for (const r of reqs) {
     if (r.status !== "FULFILLED" && recommendationCache[r.id]) renderRecommendationResult(r.id);
@@ -227,6 +251,8 @@ async function applyRecommendation(requirementId) {
       await api("/api/pool/enroll", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ offerId: p.offerId, sellerId: p.sellerId, pricePerKwh: p.pricePerKwh, qty: p.takeQty }) });
     }
     pendingRequirementId = requirementId;
+    publishForChoice = requirementId;
+    $("#publishFor").value = requirementId;
     result.applied = true;
     renderRecommendationResult(requirementId);
     toast("Recommendation applied — review the pool below, then publish");
@@ -247,8 +273,28 @@ async function unenroll(id) {
   await Promise.all([loadAvailable(), loadPool()]);
 }
 
+let poolSnapshot = { members: [], totalQty: 0, blendedPrice: 0 };
+function renderPoolCalc() {
+  const el = $("#poolCalc");
+  const { members, totalQty, blendedPrice } = poolSnapshot;
+  if (!members.length) { el.style.display = "none"; return; }
+  const margin = Number($("#margin").value) || 0;
+  const lines = members.map((m) => `  ${String(m.enrolled_qty).padStart(6)} kWh × ₹${m.price_per_kwh} (${m.offer_id}) = ₹${(m.enrolled_qty * m.price_per_kwh).toFixed(2)}`);
+  const sum = members.reduce((a, m) => a + m.enrolled_qty * m.price_per_kwh, 0);
+  el.style.display = "";
+  el.innerHTML = `<b>How the block price is calculated</b><br>` +
+    `Pooled average = Σ(kWh × own price) ÷ Σ kWh<br>` + lines.join("<br>") + `<br>` +
+    `  = ₹${sum.toFixed(2)} ÷ ${totalQty} kWh = <b>₹${blendedPrice}/kWh</b><br>` +
+    `Block price = pooled average ₹${blendedPrice} + your margin ₹${margin.toFixed(2)} = <b>₹${(Number(blendedPrice) + margin).toFixed(2)}/kWh</b>` +
+    `<br><span style="font-family:inherit">Each seller is still paid at THEIR OWN price; the margin is what the aggregator keeps.</span>`;
+}
+$("#margin").addEventListener("input", renderPoolCalc);
+
 async function loadPool() {
-  const { members, totalQty, blendedPrice } = await api("/api/pool");
+  const snap = await api("/api/pool");
+  poolSnapshot = snap;
+  const { members, totalQty, blendedPrice } = snap;
+  renderPoolCalc();
   $("#poolQty").textContent = totalQty;
   $("#poolBlended").textContent = `₹${blendedPrice}`;
   $("#poolCount").textContent = members.length;
@@ -260,8 +306,10 @@ async function loadPool() {
         <div class="secondary">${m.seller_id} · ₹${m.price_per_kwh}/kWh · ${m.enrolled_qty} kWh</div>
       </div>
       <button class="ghost" onclick="unenroll(${m.id})">Remove</button>
-    </div>`).join("") : `<div class="empty">No sellers pooled yet — pool at least 2 above before publishing.</div>`;
-  $("#btnPublish").disabled = members.length < 2;
+    </div>`).join("") : `<div class="empty">No sellers pooled yet — pool one or more offers above, then publish. One offer is enough: a single large prosumer can use the aggregator as the middleman.</div>`;
+  // The server enforces the real rule (>=2 sellers, except a top-up for a
+  // partly-bought requirement may be a single offer) and explains it if broken.
+  $("#btnPublish").disabled = members.length < 1;
 }
 
 // Expanded payout-detail rows (toggleDetail) and anything typed/suggested
@@ -277,7 +325,9 @@ let expandedDetails = new Set();
 
 async function loadBlocks() {
   const pendingReadings = {};
-  document.querySelectorAll('input[id^="final-"]').forEach((input) => {
+  const pendingAssign = {};
+  document.querySelectorAll('select[id^="assign-"]').forEach((sel) => { if (sel.value) pendingAssign[sel.id] = sel.value; });
+  document.querySelectorAll('input[id^="rd-"]').forEach((input) => {
     if (input.value) pendingReadings[input.id] = input.value;
   });
 
@@ -285,39 +335,56 @@ async function loadBlocks() {
   const el = $("#blocksList");
   if (!blocks.length) { el.innerHTML = `<div class="empty">No blocks published yet.</div>`; return; }
   el.innerHTML = blocks.map((b) => {
-    const d = b.disaggregation;
-    const settled = d.status === "SETTLED";
-    let deliveryHtml = "";
-    if (b.activeTransactionId) {
-      deliveryHtml = `
-        <div class="row" style="background:transparent; border:none; padding:8px 0 0; gap:8px;">
-          <div class="field" style="width:auto;">
-            <label>Delivered kWh reading</label>
-            <input type="number" step="0.1" id="final-${b.activeTransactionId}" style="width:120px;" />
+    // A block can be sold in several separate trades; each has its own
+    // delivery form and its own settlement breakdown.
+    const trades = b.trades || [];
+    const allSettled = trades.length > 0 && trades.every((t) => t.status === "SETTLED");
+    const tradeHtml = trades.map((t, ti) => {
+      const d = t.disaggregation;
+      const settled = t.status === "SETTLED";
+      let deliveryHtml = "";
+      if (t.status === "ACTIVE") {
+        deliveryHtml = `
+        <div style="padding:8px 0 0">
+          <div class="secondary" style="margin-bottom:6px">Enter each pooled seller's own meter reading for this ${t.requestedQty} kWh trade. Each seller is paid for what THEY delivered — a seller who comes up short bears their own shortfall penalty.</div>
+          <table class="payout">
+            <thead><tr><th>Seller offer</th><th>Own price</th><th>Allocated</th><th>Meter reading (kWh)</th></tr></thead>
+            <tbody>
+              ${(t.allocations || []).map((a) => `<tr>
+                <td>${a.offerId}</td><td>₹${a.pricePerKwh}/kWh</td><td>${a.allocatedKwh} kWh</td>
+                <td><input type="number" step="0.01" min="0" id="rd-${t.transactionId}__${a.offerId}" data-txn="${t.transactionId}" data-offer="${a.offerId}" style="width:110px" /></td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+          <div class="row" style="background:transparent; border:none; padding:8px 0 0; gap:8px;">
+            <button class="secondary" onclick="suggestDelivery('${t.transactionId}')">Suggest readings</button>
+            <button onclick="reportDelivery('${t.transactionId}')">Report delivery</button>
           </div>
-          <button class="secondary" onclick="suggestDelivery('${b.activeTransactionId}')">Suggest reading</button>
-          <button onclick="reportDelivery('${b.activeTransactionId}')">Report delivery</button>
         </div>`;
-    }
-    let payoutHtml = "";
-    if (settled && d.memberPayouts) {
-      const marginDiffers = Math.abs(d.aggregatorMargin - d.intendedMargin) > 0.005;
-      payoutHtml = `
-        <div class="secondary" style="margin-top:10px;">Delivered ${d.finalAlloc} of ${d.requestedQty} kWh requested${d.shortfallKwh > 0 ? ` — <span style="color:var(--red)">${d.shortfallKwh} kWh shortfall</span>` : ""} · settlement price ₹${d.pricePerKwh}/kWh · click a seller row for the full calculation</div>
+      }
+      let payoutHtml = "";
+      if (settled && d.memberPayouts) {
+        const key = `${b.id}-${ti}`;
+        const marginDiffers = Math.abs(d.aggregatorMargin - d.intendedMargin) > 0.005;
+        payoutHtml = `
+        <div class="secondary" style="margin-top:10px;">Delivered ${d.finalAlloc} of ${d.requestedQty} kWh (sum of the sellers' own meter readings)${d.shortfallKwh > 0 ? ` — <span style="color:var(--red)">${d.shortfallKwh} kWh shortfall</span>` : ""} · settlement price ₹${d.pricePerKwh}/kWh · click a seller row for the full calculation</div>
         <table class="payout">
-          <thead><tr><th>Seller</th><th>Own price</th><th>Delivered share</th><th>Net payout</th><th></th></tr></thead>
+          <thead><tr><th>Seller</th><th>Own price</th><th>Delivered / allocated</th><th>Net payout</th><th></th></tr></thead>
           <tbody>
             ${d.memberPayouts.map((m, i) => `
-              <tr class="payout-row" onclick="toggleDetail('${b.id}-${i}')">
-                <td>${m.sellerId} (${m.offerId})</td><td>₹${m.originalPricePerKwh}/kWh</td><td>${m.deliveredShare} kWh</td><td>${money(m.net)}</td><td class="secondary">▸ details</td>
+              <tr class="payout-row" onclick="toggleDetail('${key}-${i}')">
+                <td>${m.sellerId} (${m.offerId})</td><td>₹${m.originalPricePerKwh}/kWh</td>
+                <td>${m.deliveredShare} / ${m.allocatedQty} kWh${m.shortfall > 0 ? ` <span style="color:var(--red)">(−${m.shortfall})</span>` : ""}</td>
+                <td>${money(m.net)}</td><td class="secondary">▸ details</td>
               </tr>
-              <tr id="detail-${b.id}-${i}" class="payout-detail-row" style="display:none;">
+              <tr id="detail-${key}-${i}" class="payout-detail-row" style="display:none;">
                 <td colspan="5">
                   <div class="payout-detail">
-                    ${m.enrolledQty} kWh enrolled × ${(d.deliveryRatio * 100).toFixed(1)}% delivery ratio = <b>${m.deliveredShare} kWh</b> delivered<br/>
+                    Allocated ${m.allocatedQty} kWh of this trade · own meter read <b>${m.deliveredShare} kWh</b>${m.shortfall > 0 ? ` (short by ${m.shortfall} kWh)` : " (delivered in full)"}<br/>
                     Gross: ${m.deliveredShare} kWh × ₹${m.originalPricePerKwh}/kWh = ${money(m.gross)}<br/>
                     − Seller-side wheeling: ${m.deliveredShare} kWh × ₹0.50/kWh = ${money(m.wheeling)}<br/>
-                    = <b>Net payout: ${money(m.net)}</b>
+                    ${m.shortfall > 0 ? `− Shortfall penalty: ${m.shortfall} kWh × ₹2.50/kWh = ${money(m.penalty)}<br/>` : ""}
+                    = <b>Net payout: ${money(m.net)}</b>${m.net < 0 ? " (the seller owes this — their penalty exceeds what they earned)" : ""}
                   </div>
                 </td>
               </tr>`).join("")}
@@ -327,26 +394,38 @@ async function loadBlocks() {
             <tr><td colspan="4" class="secondary" style="font-weight:400;">↳ energy ${money(d.tradeValue)} + buyer-side wheeling ${money(d.wheelingBuyerTotal)}</td><td></td></tr>
             <tr><td colspan="4">Aggregator received (as the publishing seller)</td><td>${money(d.settlementAmount)}</td></tr>
             <tr><td colspan="4" class="secondary" style="font-weight:400;">↳ energy ${money(d.tradeValue)} − seller-side wheeling ${money(d.wheelingSellerTotal)}${d.penalty > 0 ? ` − shortfall penalty ${money(d.penalty)}` : ""}</td><td></td></tr>
-            <tr><td colspan="4">Sum paid out to pooled sellers</td><td>${money(d.sumMemberNet)}</td></tr>
+            <tr><td colspan="4">Sum paid out to pooled sellers (already credited to their wallets)</td><td>${money(d.sumMemberNet)}</td></tr>
             <tr><td colspan="4"><b>Aggregator margin (received − paid out)</b></td><td><b>${money(d.aggregatorMargin)}</b></td></tr>
-            ${marginDiffers ? `<tr><td colspan="4" class="secondary" style="font-weight:400;">Intended margin at publish time was ${money(d.intendedMargin)} (₹${b.margin_per_kwh}/kWh × ${b.total_quantity_kwh} kWh) — the ${d.shortfallKwh} kWh shortfall above (and the buyer/seller wheeling asymmetry) is why the realized margin differs.</td><td></td></tr>` : ""}
+            ${marginDiffers ? `<tr><td colspan="4" class="secondary" style="font-weight:400;">Intended margin on this trade was ${money(d.intendedMargin)} (₹${b.margin_per_kwh}/kWh × ${d.requestedQty} kWh) — it differs because the energy actually delivered, and which sellers delivered it, differs from the plan (each seller's penalty is charged to that seller, not to the aggregator).</td><td></td></tr>` : ""}
           </tfoot>
         </table>`;
-    }
+      }
+      return `
+        <div style="border-top:1px dashed var(--border); margin-top:10px; padding-top:8px;">
+          <div class="secondary">Trade ${t.transactionId.slice(0, 8)} · ${t.bapId === "buyerapp.example.com" ? "bulk buyer" : t.bapId} · ${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh · <b>${settled ? "SETTLED" : t.status}</b></div>
+          ${deliveryHtml}
+          ${payoutHtml}
+        </div>`;
+    }).join("");
+    const withdrawn = b.withdrawn_qty || 0;
+    const sold = round(b.total_quantity_kwh - b.remaining_qty - withdrawn);
+    const pooledAvg = round(b.blended_price_per_kwh - b.margin_per_kwh);
     return `
       <div class="row" style="flex-direction:column; align-items:stretch;">
         <div class="row" style="background:transparent; border:none; padding:0;">
           <div class="meta">
             <div class="primary">${b.id}</div>
-            <div class="secondary">${b.total_quantity_kwh} kWh @ ₹${b.blended_price_per_kwh}/kWh · ${b.member_count} sellers pooled · margin ₹${b.margin_per_kwh}/kWh</div>
+            <div class="secondary">${b.total_quantity_kwh} kWh @ ₹${b.blended_price_per_kwh}/kWh <span style="color:var(--muted)">(pooled average ₹${pooledAvg} + margin ₹${b.margin_per_kwh})</span> · ${b.member_count} seller${b.member_count === 1 ? "" : "s"} pooled · ${b.remaining_qty} kWh still unsold${sold > 0 ? ` · ${sold} kWh sold` : ""}${withdrawn > 0 ? ` · ${withdrawn} kWh withdrawn (returned to sellers)` : ""}${b.reserved_for_requirement ? ` · reserved for ${b.reserved_for_requirement}` : ""}</div>
           </div>
-          <span class="badge ${settled ? "settled" : "waiting"}">${settled ? "Settled" : (b.tradeStatus || "Awaiting bulk buyer")}</span>
+          ${(!b.reserved_for_requirement && b.remaining_qty > 0.001 && openRequirements.length) ? `<select id="assign-${b.id}" title="Reserve this open-market block for a DISCOM requirement so the DISCOM can buy it"><option value="">Reserve for…</option>${openRequirements.map((r) => `<option value="${r.id}">${r.id} (${r.quantity_kwh} kWh)</option>`).join("")}</select><button class="secondary" onclick="assignBlock('${b.id}')">Reserve</button>` : ""}
+          ${b.remaining_qty > 0.001 ? `<button class="ghost" title="Take the unsold kWh off the market and hand that capacity back to the pooled sellers" onclick="withdrawBlock('${b.id}')">Withdraw unsold</button>` : ""}
+          <span class="badge ${allSettled ? "settled" : "waiting"}">${allSettled ? "Settled" : (trades.length ? (trades.some((t) => t.status === "SETTLED") ? "Partly settled" : trades[trades.length - 1].status) : "Awaiting bulk buyer")}</span>
         </div>
-        ${deliveryHtml}
-        ${payoutHtml}
+        ${tradeHtml}
       </div>`;
   }).join("");
 
+  Object.entries(pendingAssign).forEach(([id, v]) => { const el = document.getElementById(id); if (el) el.value = v; });
   // Re-apply what the rebuild above would otherwise have silently lost.
   Object.entries(pendingReadings).forEach(([id, value]) => {
     const input = document.getElementById(id);
@@ -359,17 +438,21 @@ async function loadBlocks() {
 }
 
 $("#btnDiscover").onclick = async () => {
-  try { await api("/api/discover", { method: "POST" }); toast("Discover sent — refreshing in a moment…"); setTimeout(loadAvailable, 1500); }
+  try { await loadAvailable(); toast("Offers refreshed"); }
   catch (e) { toast(`Failed: ${e.message}`); }
 };
+setInterval(() => loadAvailable().catch(() => {}), 4000);
 
 $("#publishForm").onsubmit = async (e) => {
   e.preventDefault();
   try {
+    if (!$("#publishFor").value && openRequirements.length &&
+        !confirm(`You have ${openRequirements.length} open DISCOM requirement(s). Publishing as "None — open-market block" means ANY buyer can take it and the DISCOM's own dashboard cannot buy it.\n\nPublish to the open market anyway? (Cancel, then pick the requirement in "Serve requirement".)`)) return;
     const marginPerKwh = Number($("#margin").value) || 0.3;
-    await api("/api/pool/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marginPerKwh, requirementId: pendingRequirementId }) });
-    toast("Block published — discoverable by buyer-app now");
+    await api("/api/pool/publish", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ marginPerKwh, requirementId: $("#publishFor").value || null }) });
+    toast($("#publishFor").value ? "Block published — the Grid/DISCOM can now buy it against its requirement" : "Block published to the open market");
     pendingRequirementId = null;
+    publishForChoice = null;
     await Promise.all([loadPool(), loadBlocks(), loadAvailable(), loadRequirements()]);
   } catch (e2) { toast(`Failed: ${e2.message}`); }
 };
@@ -383,17 +466,38 @@ function toggleDetail(key) {
 }
 
 async function suggestDelivery(transactionId) {
-  const { suggestedFinalAlloc } = await api(`/api/deliver/${transactionId}/suggest`);
-  $(`#final-${transactionId}`).value = suggestedFinalAlloc;
+  const { readings } = await api(`/api/deliver/${transactionId}/suggest`);
+  readings.forEach((r) => { const el = document.getElementById(`rd-${transactionId}__${r.offerId}`); if (el) el.value = r.suggestedKwh; });
 }
 
 async function reportDelivery(transactionId) {
   try {
-    const finalAlloc = Number($(`#final-${transactionId}`).value);
-    if (!finalAlloc || finalAlloc <= 0) return toast("Enter a positive delivered kWh reading first");
-    await api(`/api/deliver/${transactionId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ finalAlloc }) });
-    toast("Delivery reported — settling…");
+    const inputs = [...document.querySelectorAll(`input[data-txn="${transactionId}"]`)];
+    if (!inputs.length) return toast("No sellers to report on");
+    if (inputs.some((i) => i.value === "")) return toast("Enter a meter reading for every seller (0 if they delivered nothing)");
+    const readings = inputs.map((i) => ({ offerId: i.dataset.offer, kwh: Number(i.value) }));
+    await api(`/api/deliver/${transactionId}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ readings }) });
+    toast("Delivery reported — settling and paying the sellers…");
     await loadBlocks();
+  } catch (e) { toast(`Failed: ${e.message}`); }
+}
+
+async function assignBlock(id) {
+  const requirementId = document.getElementById(`assign-${id}`).value;
+  if (!requirementId) return toast("Pick the requirement to reserve this block for");
+  try {
+    await api(`/api/blocks/${id}/assign`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requirementId }) });
+    toast(`Block reserved for ${requirementId} — the DISCOM can now buy it`);
+    await Promise.all([loadBlocks(), loadRequirements()]);
+  } catch (e) { toast(`Failed: ${e.message}`); }
+}
+
+async function withdrawBlock(id) {
+  if (!confirm("Withdraw the unsold kWh of this block? That capacity goes back to the pooled sellers. Anything already sold stays sold.")) return;
+  try {
+    const r = await api(`/api/blocks/${id}/withdraw`, { method: "POST" });
+    toast(`Withdrew ${r.withdrawnKwh} kWh — returned to the sellers`);
+    await Promise.all([loadBlocks(), loadRequirements(), loadAvailable()]);
   } catch (e) { toast(`Failed: ${e.message}`); }
 }
 
@@ -406,7 +510,7 @@ function connectWs() {
     if (type === "pool_updated") loadPool();
     if (type === "block_published") { loadBlocks(); loadPool(); loadRequirements(); }
     if (type === "requirement_posted") loadRequirements();
-    if (type === "reset") { Object.keys(recommendationCache).forEach((k) => delete recommendationCache[k]); expandedDetails.clear(); loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }
+    if (type === "reset") { Object.keys(recommendationCache).forEach((k) => delete recommendationCache[k]); expandedDetails.clear(); pendingRequirementId = null; publishForChoice = null; loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }
   };
 }
 
@@ -421,12 +525,36 @@ setInterval(loadRequirements, 5000);
 // that external, real progress without the user having to manually refresh.
 setInterval(loadBlocks, 5000);
 
+
+async function resetDemo(afterReset) {
+  if (!confirm("Reset the WHOLE demo? This wipes every offer, pool, block, requirement and trade on ALL FOUR dashboards (Seller, Buyer, Aggregator, Grid/DISCOM). It can't be undone.")) return;
+  try {
+    const res = await fetch("/api/reset-all", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { toast("Reset failed: " + (body.error || res.status)); return; }
+    const bad = Object.entries(body.results || {}).filter(([, v]) => v !== "ok");
+    toast(bad.length ? "Reset partly done — " + bad.map(([k, v]) => k + ": " + v).join("; ") : "Whole demo reset — all four dashboards are clean");
+  } catch (e) { toast("Reset failed: " + (e.message || e)); }
+  if (afterReset) afterReset();
+}
+
+$("#resetBtn").addEventListener("click", () => resetDemo(() => { loadAvailable(); loadPool(); loadBlocks(); loadRequirements(); }));
+
 loadAbout();
 loadAvailable();
 loadRequirements();
 loadPool();
 loadBlocks();
 connectWs();
+async function loadWallet() {
+  try {
+    const w = await (await fetch("/api/wallet")).json();
+    document.getElementById("walletAmt").textContent = "₹" + Number(w.total).toFixed(2);
+    document.getElementById("walletSub").textContent = (w.received > 0 || w.paidOut > 0 ? "received ₹" + Number(w.received).toFixed(2) + " − paid sellers ₹" + Number(w.paidOut).toFixed(2) : "") + (w.inEscrow > 0 ? " · ₹" + Number(w.inEscrow).toFixed(2) + " pending delivery" : "");
+  } catch (_) {}
+}
+loadWallet(); setInterval(loadWallet, 4000);
 </script>
+<script src="/wallet.js"></script>
 </body>
 </html>

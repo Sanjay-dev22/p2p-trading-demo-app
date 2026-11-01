@@ -9,10 +9,13 @@ const express = require("express");
 const path = require("path");
 const db = require("./db");
 const beckn = require("./beckn");
+const { round2, inr, L, finish } = require("./walletlib");
 
 const PORT = process.env.PORT || 4004;
 const AGGREGATOR_APP_URL = process.env.AGGREGATOR_APP_URL || "http://localhost:4003";
 const AGGREGATOR_BPP_URI = "http://aggregatorapp.example.com:9000/bpp/receiver";
+const SELLER_APP_URL = process.env.SELLER_APP_URL || "http://localhost:4002";
+const BUYER_APP_URL = process.env.BUYER_APP_URL || "http://localhost:4001";
 
 async function getJson(url, opts) {
   let res;
@@ -66,6 +69,49 @@ app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/health", (req, res) => res.status(200).send("ok"));
 
+
+// Delivered kWh and the network's own statement of what the buyer pays, read
+// back out of the settled on_status contract.
+function extractFinalAlloc(contract) {
+  const payloads = contract?.commitments?.[0]?.commitmentAttributes?.intervals?.[0]?.payloads || [];
+  const v = payloads.find((p) => p.type === "FINAL_ALLOC")?.values?.[0];
+  return Number.isFinite(Number(v)) ? Number(v) : null;
+}
+function extractBuyerNote(contract) {
+  const flows = contract?.consideration?.[0]?.considerationAttributes?.revenueFlows || [];
+  return flows.find((f) => f.role === "buyerPlatform")?.description || null;
+}
+
+app.get("/api/wallet/history", (req, res) => {
+  const entries = [];
+  for (const t of db.prepare("SELECT * FROM trades WHERE status IN ('SETTLED','ACTIVE')").all()) {
+    if (t.status === "ACTIVE") {
+      entries.push({ id: t.transaction_id, at: t.updated_at, kind: "pending", amount: null, title: `Block purchase · ${t.offer_id}`, subtitle: `${t.requested_qty} kWh @ ₹${t.price_per_kwh}/kWh for ${t.requirement_id} — waiting for delivery`, transactionId: t.transaction_id,
+        lines: [L("Agreed", `${t.requested_qty} kWh @ ₹${t.price_per_kwh}/kWh`), L("Energy if delivered in full", inr(round2(t.requested_qty * t.price_per_kwh))), L("+ Buyer-side wheeling if in full", inr(round2(t.requested_qty * 0.5))), L("= Expected payment", inr(round2(t.requested_qty * (t.price_per_kwh + 0.5))), { strong: true }), L("Status", "Not charged yet — this settles when the aggregator reports delivery")] });
+      continue;
+    }
+    const paid = t.settlement_amount ?? 0;
+    const lines = [L("Requirement served", t.requirement_id)];
+    if (t.final_alloc != null) {
+      const wheel = round2(t.final_alloc * 0.5);
+      const energy = round2(paid - wheel);
+      lines.push(L("Delivered", `${t.final_alloc} of ${t.requested_qty} kWh${t.final_alloc < t.requested_qty ? ` (${round2(t.requested_qty - t.final_alloc)} kWh short)` : ""}`));
+      lines.push(L(`Energy: ${t.final_alloc} kWh × ₹${t.price_per_kwh}/kWh`, inr(energy)));
+      lines.push(L(`+ Buyer-side wheeling: ${t.final_alloc} kWh × ₹0.50/kWh`, inr(wheel)));
+    }
+    lines.push(L("= Paid", inr(paid), { strong: true }));
+    if (t.settlement_note) lines.push(L("Network's settlement statement", t.settlement_note, { note: true }));
+    entries.push({ id: t.transaction_id, at: t.updated_at, kind: "settled", amount: -paid, title: `Block purchase · ${t.offer_id}`, subtitle: `${t.final_alloc ?? "?"} of ${t.requested_qty} kWh delivered · ${t.requirement_id}`, transactionId: t.transaction_id, lines });
+  }
+  res.json(finish(entries));
+});
+
+app.get("/api/wallet", (req, res) => {
+  const spent = db.prepare("SELECT COALESCE(SUM(settlement_amount),0) AS v FROM trades WHERE status='SETTLED'").get().v;
+  const inEscrow = db.prepare("SELECT COALESCE(SUM(requested_qty * price_per_kwh),0) AS v FROM trades WHERE status='ACTIVE'").get().v;
+  res.json({ total: Math.round(spent * 100) / 100, inEscrow: Math.round(inEscrow * 100) / 100 });
+});
+
 app.get("/api/requirements", async (req, res) => {
   const result = await getJson(`${AGGREGATOR_APP_URL}/api/requirements`);
   if (!result.ok) return res.status(result.status || 502).json({ error: extractError(result) });
@@ -101,9 +147,14 @@ app.get("/api/trades", (req, res) => {
 // rather than assuming exactly one block exists and rejecting outright if
 // it's undersized. A second (or third) call after more is published simply
 // tops up the remainder; it is not blocked by an earlier trade existing.
+// A second click while the first purchase is still in flight would read the
+// same "still needed" figure and buy the requirement twice over.
+const buying = new Set();
 app.post("/api/requirements/:id/buy", async (req, res) => {
+  const requirementId = req.params.id;
+  if (buying.has(requirementId)) return res.status(409).json({ error: `A purchase for ${requirementId} is already in progress — wait for it to finish.` });
+  buying.add(requirementId);
   try {
-    const requirementId = req.params.id;
 
     const reqResult = await getJson(`${AGGREGATOR_APP_URL}/api/requirements`);
     if (!reqResult.ok) return res.status(reqResult.status || 502).json({ error: extractError(reqResult) });
@@ -151,15 +202,23 @@ app.post("/api/requirements/:id/buy", async (req, res) => {
       const take = Math.round(Math.min(block.remaining_qty, qtyRemaining) * 100) / 100;
       if (take <= 0) continue;
       const init = beckn.buildInit({ offerId: block.id, quantityKwh: take, pricePerKwh: block.price_per_kwh, bppId: beckn.SELLER_ID, bppUri: AGGREGATOR_BPP_URI });
-      const result = await beckn.postToOnix("/bap/caller/init", init);
-      if (!result.ok) { failures.push(`${block.id}: ${extractOnixError(result)}`); continue; }
-
+      // Record the trade BEFORE sending: the aggregator's on_init can come back
+      // before our own post has even returned, and the webhook ignores any
+      // transaction it has no row for.
       const now = beckn.nowIso();
       db.prepare(
         `INSERT INTO trades (transaction_id, requirement_id, offer_id, bpp_id, bpp_uri, requested_qty, price_per_kwh, status, raw_context, created_at, updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?)`
       ).run(init.context.transactionId, requirementId, block.id, beckn.SELLER_ID, AGGREGATOR_BPP_URI, take, block.price_per_kwh, "PENDING", JSON.stringify(init), now, now);
       logEvent(init.context.transactionId, "init", "sent", `Buying ${take} kWh @ ₹${block.price_per_kwh}/kWh from block ${block.id} for requirement ${requirementId}`, init);
+      const result = await beckn.postToOnix("/bap/caller/init", init);
+      if (!result.ok) {
+        const errorMessage = extractOnixError(result);
+        failures.push(`${block.id}: ${errorMessage}`);
+        db.prepare("UPDATE trades SET status=?, error_message=?, updated_at=? WHERE transaction_id=?").run("REJECTED", errorMessage, beckn.nowIso(), init.context.transactionId);
+        logEvent(init.context.transactionId, "init", "received", `Rejected: ${errorMessage}`);
+        continue;
+      }
       bought.push({ transactionId: init.context.transactionId, offerId: block.id, qty: take, pricePerKwh: block.price_per_kwh });
       qtyRemaining = Math.round((qtyRemaining - take) * 100) / 100;
     }
@@ -182,7 +241,26 @@ app.post("/api/requirements/:id/buy", async (req, res) => {
   } catch (err) {
     console.error("requirements/:id/buy failed:", err);
     res.status(500).json({ error: String(err.message || err) });
+  } finally {
+    buying.delete(requirementId);
   }
+});
+
+const confirmSent = new Set();
+
+// Direct app-to-app notice (NOT a Beckn message): the aggregator declined a
+// bid it could not or would not honour (price below the block's fixed price,
+// or the block no longer has the quantity). Without this the purchase would
+// sit on "Pending" forever.
+app.post("/api/notify/:transactionId", (req, res) => {
+  const { event, reason } = req.body || {};
+  const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(req.params.transactionId);
+  if (!row) return res.status(404).json({ error: "trade not found" });
+  if (event === "declined" && row.status === "PENDING") {
+    db.prepare("UPDATE trades SET status=?, error_message=?, updated_at=? WHERE transaction_id=?").run("REJECTED", reason || "Declined by the aggregator", beckn.nowIso(), row.transaction_id);
+    logEvent(row.transaction_id, "decline", "received", `Aggregator declined: ${reason || "no reason given"}`);
+  }
+  res.json({ ok: true });
 });
 
 // ---------- inbound webhook: real callbacks from onix-gridapp's bapTxnReceiver ----------
@@ -194,24 +272,41 @@ app.post("/api/bap-webhook/:action", async (req, res) => {
   try {
     if (action === "on_init") {
       const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId);
-      if (row) {
+      // Only the first on_init of a still-PENDING purchase is acted on.
+      if (row && row.status === "PENDING" && !confirmSent.has(context.transactionId)) {
+        confirmSent.add(context.transactionId);
         logEvent(context.transactionId, "on_init", "received", "Aggregator accepted our bid — auto-confirming", { context, message });
         const onConfirm = beckn.buildConfirm(context, message.contract);
-        const result = await beckn.postToOnix("/bap/caller/confirm", onConfirm);
-        const now = beckn.nowIso();
-        db.prepare("UPDATE trades SET raw_context=?, updated_at=? WHERE transaction_id=?").run(JSON.stringify(onConfirm), now, context.transactionId);
+        db.prepare("UPDATE trades SET raw_context=?, updated_at=? WHERE transaction_id=?").run(JSON.stringify(onConfirm), beckn.nowIso(), context.transactionId);
         logEvent(context.transactionId, "confirm", "sent", "Confirmed", onConfirm);
-        if (!result.ok) console.error("confirm send failed:", result.status, result.json);
+        const result = await beckn.postToOnix("/bap/caller/confirm", onConfirm);
+        if (!result.ok) {
+          // Network refused our confirm -- no on_confirm will ever arrive. Mark it
+          // rejected with the real reason and tell the aggregator to hand back the
+          // block capacity / requirement quantity it already counted at init.
+          console.error("confirm send failed:", result.status, result.json);
+          const errorMessage = extractOnixError(result);
+          db.prepare("UPDATE trades SET status=?, error_message=?, updated_at=? WHERE transaction_id=? AND status=?").run("REJECTED", errorMessage, beckn.nowIso(), context.transactionId, "PENDING");
+          logEvent(context.transactionId, "confirm", "received", `Confirm rejected by the network: ${errorMessage}`);
+          fetch(`${AGGREGATOR_APP_URL}/api/notify/${context.transactionId}`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ event: "confirm_failed", reason: errorMessage }),
+          }).catch((e) => console.error("notify aggregator of failed confirm failed (non-fatal):", e.message || e));
+        }
       }
     } else if (action === "on_confirm") {
-      const now = beckn.nowIso();
-      db.prepare("UPDATE trades SET status=?, updated_at=? WHERE transaction_id=?").run("ACTIVE", now, context.transactionId);
-      logEvent(context.transactionId, "on_confirm", "received", "Trade is now ACTIVE", { context, message });
+      const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId);
+      if (row && row.status === "PENDING") {
+        db.prepare("UPDATE trades SET status=?, updated_at=? WHERE transaction_id=?").run("ACTIVE", beckn.nowIso(), context.transactionId);
+        logEvent(context.transactionId, "on_confirm", "received", "Trade is now ACTIVE", { context, message });
+      }
     } else if (action === "on_status") {
+      const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId);
+      if (!row || row.status === "SETTLED") return res.status(200).json(beckn.buildAck(context || {}));
       const buyerCost = beckn.extractRevenueFlow(message.contract, "buyerPlatform");
       const settlementAmount = buyerCost != null ? Math.abs(buyerCost) : null;
       const now = beckn.nowIso();
-      db.prepare("UPDATE trades SET status=?, settlement_amount=?, updated_at=? WHERE transaction_id=?").run("SETTLED", settlementAmount, now, context.transactionId);
+      db.prepare("UPDATE trades SET status=?, settlement_amount=?, final_alloc=?, settlement_note=?, updated_at=? WHERE transaction_id=?").run("SETTLED", settlementAmount, extractFinalAlloc(message.contract), extractBuyerNote(message.contract), now, context.transactionId);
       logEvent(context.transactionId, "on_status", "received", `Settled — paid ₹${settlementAmount != null ? settlementAmount.toFixed(2) : "?"}`, { context, message });
     }
     res.status(200).json(beckn.buildAck(context || {}));
@@ -225,10 +320,26 @@ app.post("/api/reset", (req, res) => {
   try {
     db.exec("DELETE FROM trades");
     db.exec("DELETE FROM events");
+    confirmSent.clear();
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) });
   }
+});
+
+// ---------- Reset the WHOLE demo: this platform, then every other one ----------
+// Requirements live on the aggregator, so only a whole-demo reset clears them.
+app.post("/api/reset-all", async (req, res) => {
+  const results = { grid: "ok" };
+  try { db.exec("DELETE FROM trades"); db.exec("DELETE FROM events"); confirmSent.clear(); }
+  catch (err) { results.grid = String(err.message || err); }
+  await Promise.all(Object.entries({ aggregator: AGGREGATOR_APP_URL, seller: SELLER_APP_URL, buyer: BUYER_APP_URL }).map(async ([name, url]) => {
+    try {
+      const r = await fetch(`${url}/api/reset`, { method: "POST" });
+      results[name] = r.ok ? "ok" : `HTTP ${r.status}`;
+    } catch (e) { results[name] = `unreachable (${e.message || e})`; }
+  }));
+  res.json({ ok: Object.values(results).every((v) => v === "ok"), results });
 });
 
 app.listen(PORT, () => {

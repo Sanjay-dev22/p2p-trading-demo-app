@@ -104,6 +104,12 @@ for (const stmt of [
   // `SELECT * FROM blocks WHERE requirement_id = ?` rather than trusting
   // requirements.block_id, which only ever points at the most recent one.
   "ALTER TABLE blocks ADD COLUMN requirement_id TEXT",
+  // Per-seller meter readings (JSON {offerId: deliveredKwh}) recorded when a
+  // trade's delivery is reported -- settlement is split from THESE, not from a
+  // single made-up ratio applied to every seller alike.
+  "ALTER TABLE trades ADD COLUMN readings TEXT",
+  // kWh of a block the aggregator pulled back unsold (handed back to sellers).
+  "ALTER TABLE blocks ADD COLUMN withdrawn_qty REAL DEFAULT 0",
 ]) {
   try { db.exec(stmt); } catch (_) { /* column already exists */ }
 }

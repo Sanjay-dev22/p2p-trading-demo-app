@@ -80,10 +80,11 @@
 <body>
 <header>
   <h1>🔌 <span class="role">Buyer Platform</span> — buyerapp.example.com</h1>
-  <div style="display:flex;align-items:center;gap:12px">
+  <div style="display:flex;align-items:center;gap:16px">
+    <div id="wallet" onclick="openWalletHistory('Wallet · payments')" title="Click for transaction history. Cash this platform has paid on trades that have settled" style="text-align:right;line-height:1.2;cursor:pointer"><div id="walletAmt" style="font-size:22px;font-weight:700;color:var(--accent,#7ee0a1)">₹0.00</div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">Wallet · paid (settled)</div><div id="walletSub" style="font-size:11px;color:var(--muted)"></div></div>
     <span class="conn down" id="conn">connecting…</span>
     <a href="/network.html" style="color:var(--muted);font-size:13px;text-decoration:none">🌐 Network Dashboard</a>
-    <button class="secondary" id="resetBtn" title="Wipe this platform's own offers and trades">Reset demo</button>
+    <button class="secondary" id="resetBtn" title="Wipe all four dashboards (Seller, Buyer, Aggregator, Grid) for a fresh run">Reset demo</button>
   </div>
 </header>
 <div class="role-banner">
@@ -226,6 +227,7 @@ function parseOfferMeta(rawJsonStr) {
 // own Seller Platform's real catalog right now — myOfferIds below,
 // refreshed alongside everything else.
 let myOfferIds = new Set();
+let reservedIds = new Set();
 
 // Avoid a full DOM replace on every 5s poll when nothing actually
 // changed — the old code re-rendered the entire list every tick
@@ -256,6 +258,7 @@ async function refreshAll(force) {
     fetch("/api/my-offers").then((r) => r.json()).catch(() => ({ offerIds: [] })),
   ]);
   myOfferIds = new Set(myOffers.offerIds || []);
+  reservedIds = new Set(myOffers.reservedIds || []);
   lastOfferRows = offers;
   const offersJson = JSON.stringify(offers) + JSON.stringify([...myOfferIds]);
   if (force || offersJson !== lastOffersJson) { lastOffersJson = offersJson; renderOffers(applyFilters(offers)); }
@@ -324,7 +327,9 @@ function renderOffers(list) {
       // message to their live system, untested and not something to wire up
       // silently. Capturing their real endpoint (below) is a separate,
       // reversible step from actually being allowed to trade with it.
-      action = `<span class="tag" title="This app only ever routes a real init to our own Seller Platform, on purpose">view only</span>`;
+      action = reservedIds.has(o.offer_id)
+        ? `<span class="tag" title="The aggregator published this block for a specific DISCOM requirement. It is visible on the public catalog, but the aggregator declines every other buyer.">reserved for a DISCOM requirement</span>`
+        : `<span class="tag" title="This app only ever routes a real init to our own Seller Platform, on purpose">view only</span>`;
     }
     const endpointLine = !isOwn
       ? (o.bpp_uri
@@ -541,14 +546,18 @@ $("#discoverBtn").addEventListener("click", async () => {
   toast("discover sent — results (if any) will appear shortly");
 });
 
-$("#resetBtn").addEventListener("click", async () => {
-  if (!confirm("Wipe every discovered offer and trade on this Buyer Platform? This can't be undone. (The Seller Platform's own data is separate — reset it there too if you want a fully clean pair.)")) return;
-  const res = await fetch("/api/reset", { method: "POST" });
-  const body = await res.json();
-  if (!res.ok) { toast("Reset failed: " + (body.error || res.status), true); return; }
-  toast("Buyer Platform reset — starting fresh");
-  refreshAll();
-});
+$("#resetBtn").addEventListener("click", () => resetDemo(() => refreshAll(true)));
+async function resetDemo(afterReset) {
+  if (!confirm("Reset the WHOLE demo? This wipes every offer, pool, block, requirement and trade on ALL FOUR dashboards (Seller, Buyer, Aggregator, Grid/DISCOM). It can't be undone.")) return;
+  try {
+    const res = await fetch("/api/reset-all", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { toast("Reset failed: " + (body.error || res.status)); return; }
+    const bad = Object.entries(body.results || {}).filter(([, v]) => v !== "ok");
+    toast(bad.length ? "Reset partly done — " + bad.map(([k, v]) => k + ": " + v).join("; ") : "Whole demo reset — all four dashboards are clean");
+  } catch (e) { toast("Reset failed: " + (e.message || e)); }
+  if (afterReset) afterReset();
+}
 
 function connectWs() {
   // Match the page's own protocol: a page loaded over https:// (e.g.
@@ -578,6 +587,15 @@ function connectWs() {
 connectWs();
 refreshAll();
 setInterval(refreshAll, 5000);
+async function loadWallet() {
+  try {
+    const w = await (await fetch("/api/wallet")).json();
+    document.getElementById("walletAmt").textContent = "₹" + Number(w.total).toFixed(2);
+    document.getElementById("walletSub").textContent = (w.inEscrow > 0 ? "₹" + Number(w.inEscrow).toFixed(2) + " committed, pending delivery" : "");
+  } catch (_) {}
+}
+loadWallet(); setInterval(loadWallet, 4000);
 </script>
+<script src="/wallet.js"></script>
 </body>
 </html>

@@ -1,0 +1,8 @@
+# GridApp acting as BPP-caller (reverse-cascade response routing). Copied
+# unchanged from BuyerApp-BppCaller.yaml — targetType: bap resolves
+# context.bapId dynamically via the dedi registry.
+routingRules:
+  - version: "2.0.0"
+    targetType: "bap"
+    endpoints:
+      - on_status

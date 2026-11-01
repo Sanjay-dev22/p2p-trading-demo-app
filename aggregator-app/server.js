@@ -27,9 +27,40 @@ const { WebSocketServer } = require("ws");
 const path = require("path");
 const db = require("./db");
 const peers = require("./peers");
+const { inr, L, finish } = require("./walletlib");
 const beckn = require("./beckn");
 
 const PORT = process.env.PORT || 4003;
+const BUYER_APP_URL = peers.BUYER_APP_URL;
+const SELLER_APP_URL = peers.SELLER_APP_URL;
+const GRID_APP_URL = process.env.GRID_APP_URL || "http://localhost:4004";
+const SELLER_PLATFORM_ID = "sellerapp.example.com";
+
+// Direct app-to-app notice (NOT a Beckn message) to whichever bulk buyer made
+// a request we decline. A BPP that simply never answers an init is valid
+// Beckn, but then the buyer's dashboard would show "Pending" forever -- the
+// same coordination channel seller-app already uses for its own declines.
+// The buyer is told apart by the bapUri it signed the init with: grid-app has
+// its own onix address (gridapp.example.com), buyer-app has buyerapp.example.com.
+function notifyBuyerOfDecline(context, transactionId, reason) {
+  const target = String(context?.bapUri || "").includes("gridapp") ? GRID_APP_URL : BUYER_APP_URL;
+  fetch(`${target}/api/notify/${transactionId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event: "declined", reason }),
+  }).catch((e) => console.error("notify buyer of decline failed (non-fatal):", e.message || e));
+}
+
+// Capacity reservation on the pooled sellers' own platform (direct REST, see
+// seller-app's /api/reserve) -- pooling used to leave the underlying offers
+// fully sellable, so the same kWh could be sold twice.
+async function sellerCall(pathSuffix, body) {
+  try {
+    const r = await fetch(`${SELLER_APP_URL}${pathSuffix}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => null);
+    return { ok: r.ok, error: j?.error };
+  } catch (e) { return { ok: false, error: `seller-app unreachable: ${e.message || e}` }; }
+}
 
 // Mirrors the real enforced policy's rates — same three constants as
 // seller-app/server.js, kept in sync by hand for the same reason (this app
@@ -54,7 +85,7 @@ function extractOnixError(result) {
 // Same formula as seller-app/server.js's own computeSettlement — FIRM
 // commitments only, same default the policy itself falls back to.
 function computeSettlement({ requestedQty, finalAlloc, pricePerKwh }) {
-  const shortfallKwh = Math.max(0, requestedQty - finalAlloc);
+  const shortfallKwh = round2(Math.max(0, requestedQty - finalAlloc));
   const tradeValue = round2(finalAlloc * pricePerKwh);
   const wheelingSeller = round2(WHEELING_CHARGE_SELLER_PER_KWH * finalAlloc);
   const wheelingBuyer = round2(WHEELING_CHARGE_BUYER_PER_KWH * finalAlloc);
@@ -107,48 +138,41 @@ app.get("/api/about", (req, res) => {
       "Reuses sellerapp.example.com's already-registered signing identity (same keys as onix-sellerapp) for onix-aggregatorapp rather than registering a brand-new, distinct network participant — that step needs real DeDi registration + namespace-owner approval, out of scope for this demo. Routing is genuinely separate (own container, own catalog, own lifecycle); only the underlying signing identity is shared.",
       "Incoming requirements are matched with a simple cheapest-first greedy fill up to the requested quantity (capped by the price ceiling), not a true constrained optimization.",
       "Each individual block's own membership is fixed at its own publish time — no re-aggregation of an already-published block as sellers' availability changes mid-window. A requirement as a whole CAN be topped up with additional, separate blocks over time as new sellers appear (see below), but that's a new block, not a reopened old one.",
-      "Disaggregates the block's one real delivered-quantity reading proportionally across members (no per-member smart meter in this demo) — a real deployment would use each member's own real meter reading, per the 'virtual meter' reconciliation approach the real IES implementation guide describes.",
-      "Grid/DISCOM (grid-app) now has its own onix identity and executes the real discover/buy/confirm itself (Phase 2) — reusing buyer-app's already-registered keys (buyerapp.example.com) rather than a newly-registered identity, the same no-new-DeDi-registration trick used for this app's own identity above. buyer-app remains a fully independent bulk buyer that can see and buy the same public block too — whoever confirms first gets it; the loser's requirement just stays unfulfilled until a fresh pool is recommended.",
+      "Per-seller meter readings are ENTERED by the aggregator operator in this demo (there is no real smart-meter feed). Settlement itself is real and per seller: each seller is paid for what their own reading says they delivered, capped at their allocated share, and a seller who comes up short bears their own shortfall penalty. A real deployment would ingest each member's actual meter data (the 'virtual meter' reconciliation the IES implementation guide describes).",
+      "Grid/DISCOM (grid-app) has its own onix identity and executes the real buy/confirm itself — reusing buyer-app's already-registered keys (buyerapp.example.com), the same no-new-DeDi-registration trick used for this app's own identity above. A block published for a DISCOM's requirement is VISIBLE on the public catalog but reserved: the aggregator declines any other buyer. Only blocks published to the open market can be bought by anyone.",
+      "Cash balances (the 'wallet' in each header) are a settled-cash ledger computed from real settled trades, not a payment rail — nothing here moves actual money. Only one aggregator exists in this demo; the DISCOM cannot yet shop a requirement across several aggregators.",
     ],
   });
 });
 
 // ---------- Discover: proxy through buyer-app's own real discover ----------
-app.post("/api/discover", async (req, res) => {
-  try {
-    const result = await peers.triggerDiscover();
-    if (!result.ok) return res.status(result.status || 502).json({ error: "buyer-app rejected the discover trigger", detail: result.json, raw: result.text });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("discover failed:", err);
-    res.status(500).json({ error: String(err.message || err) });
-  }
-});
+// Kept for the dashboard button / older callers: the list is read live from the
+// Seller Platform now, so "discover" is simply a refresh (no buyer involved).
+app.post("/api/discover", (req, res) => res.json({ ok: true }));
 
 // Real offers buyer-app has actually discovered, minus whatever is already
 // enrolled in the current pending pool (no double-pooling the same offer).
 // See resolveOffer()-style cross-check comment in peers.js for why this
 // checks seller-app's own live catalog rather than trusting seller_id.
 async function listAvailableOffers() {
-  const discovered = await peers.fetchDiscoveredOffers();
+  // What an aggregator can pool is each seller offer's CURRENT unreserved
+  // capacity, read live from the Seller Platform, minus whatever is already
+  // sitting in the pending (unpublished) pool. Publishing a block reserves its
+  // kWh on the seller, and withdrawing releases them again -- so an offer
+  // whose capacity was handed back by a withdraw (or never fully pooled)
+  // reappears here automatically. The seller's offer itself is never touched.
   const ownOffers = await peers.fetchSellerOffers();
-  const ownById = new Map(ownOffers.map((o) => [o.id, o]));
-  // Excludes an offer the moment it's EVER been enrolled, not only while its
-  // pool is still pending (block_id IS NULL) — found live: because pooling
-  // never reserves capacity on seller-app's own catalog (the disclosed gap
-  // in listAvailableOffers below this fix used to only guard against), an
-  // offer already locked into a published block would still show up as
-  // "available" and could be pooled into a SECOND, different block, double-
-  // selling the same physical seller capacity. Once an offer is unenrolled
-  // (DELETE /api/pool/unenroll, only possible pre-publish) its row is gone
-  // from pool_members entirely, so it correctly becomes available again.
-  const everPooled = db.prepare("SELECT DISTINCT offer_id FROM pool_members").all().map((r) => r.offer_id);
-  return discovered
-    .filter((o) => ownById.has(o.offer_id) && !everPooled.includes(o.offer_id))
-    .map((o) => {
-      const own = ownById.get(o.offer_id);
-      return { ...o, price_per_kwh: own.price_per_kwh, available_qty: own.remaining_qty };
-    })
+  const pending = new Map();
+  for (const m of db.prepare("SELECT offer_id, SUM(enrolled_qty) AS q FROM pool_members WHERE block_id IS NULL GROUP BY offer_id").all()) pending.set(m.offer_id, m.q);
+  return ownOffers
+    .map((o) => ({
+      offer_id: o.id,
+      seller_id: SELLER_PLATFORM_ID,
+      name: "Demo Solar Offer",
+      price_per_kwh: o.price_per_kwh,
+      available_qty: round2((o.remaining_qty ?? o.quantity_kwh) - (pending.get(o.id) || 0)),
+      published_at: o.published_at,
+    }))
     .filter((o) => o.price_per_kwh && o.available_qty > 0);
 }
 
@@ -182,12 +206,15 @@ app.post("/api/pool/enroll", async (req, res) => {
     if (!own) {
       return res.status(409).json({ error: `${offerId} is not currently on our own seller-app's live catalog -- it may belong to a different real participant on the shared network (seller_id alone can't tell them apart), or it may have already been sold.` });
     }
-    if (quantity > own.remaining_qty) {
-      return res.status(409).json({ error: `Only ${own.remaining_qty} kWh remains available on ${offerId} right now -- ${quantity} kWh was requested.` });
+    const alreadyPending = db.prepare("SELECT COALESCE(SUM(enrolled_qty),0) AS q FROM pool_members WHERE block_id IS NULL AND offer_id=?").get(offerId).q;
+    const free = round2(own.remaining_qty - alreadyPending);
+    if (quantity > free + 1e-9) {
+      return res.status(409).json({ error: `Only ${free} kWh is free to pool on ${offerId} right now (${own.remaining_qty} kWh remaining${alreadyPending ? `, ${alreadyPending} kWh already in the pending pool` : ""}) -- ${quantity} kWh was requested.` });
     }
     const now = peers.nowIso();
+    // The price comes from the seller's own live offer, never from the caller.
     db.prepare("INSERT INTO pool_members (block_id, offer_id, seller_id, price_per_kwh, enrolled_qty, enrolled_at) VALUES (NULL,?,?,?,?,?)").run(
-      offerId, sellerId || "unknown", price, quantity, now
+      offerId, SELLER_PLATFORM_ID, own.price_per_kwh, quantity, now
     );
     broadcast("pool_updated", {});
     res.json({ ok: true });
@@ -218,8 +245,21 @@ app.post("/api/requirements", (req, res) => {
   res.json({ ok: true, id, requirement: db.prepare("SELECT * FROM requirements WHERE id=?").get(id) });
 });
 
+// kWh already published for a requirement and still unsold: it counts as
+// covered, so recommending/publishing again must not offer it a second time.
+const openQtyFor = (requirementId) => round2(db.prepare("SELECT COALESCE(SUM(remaining_qty),0) AS v FROM blocks WHERE requirement_id=?").get(requirementId).v);
+
 app.get("/api/requirements", (req, res) => {
-  res.json(db.prepare("SELECT * FROM requirements ORDER BY created_at DESC").all());
+  // Each requirement carries the blocks published against it, so the Grid can
+  // show what has actually been offered (and how much of the ask is still
+  // uncovered) instead of only a bare status word.
+  const rows = db.prepare("SELECT * FROM requirements ORDER BY created_at DESC").all();
+  const blockStmt = db.prepare("SELECT id, total_quantity_kwh AS quantity_kwh, remaining_qty, COALESCE(withdrawn_qty,0) AS withdrawn_qty, blended_price_per_kwh AS price_per_kwh, member_count, published_at FROM blocks WHERE requirement_id=? ORDER BY published_at ASC");
+  res.json(rows.map((r) => {
+    const blocks = blockStmt.all(r.id);
+    // "On offer" = what was published minus whatever the aggregator pulled back.
+    return { ...r, blocks, published_qty: round2(blocks.reduce((s, b) => s + b.quantity_kwh - b.withdrawn_qty, 0)) };
+  }));
 });
 
 // Cheapest-first greedy fill — a disclosed simplification (see /api/about),
@@ -245,7 +285,11 @@ app.post("/api/requirements/:id/recommend", async (req, res) => {
     // discovered hours later, top up a requirement instead of the operator
     // having no way back in once something was already published for it).
     const alreadyBought = requirement.fulfilled_qty || 0;
-    const neededQty = round2(Math.max(0, requirement.quantity_kwh - alreadyBought));
+    const onOffer = openQtyFor(requirement.id);
+    const neededQty = round2(Math.max(0, requirement.quantity_kwh - alreadyBought - onOffer));
+    if (neededQty <= 0.001) {
+      return res.status(409).json({ error: `Nothing left to recommend for ${requirement.id}: ${alreadyBought} kWh already bought and ${onOffer} kWh already on offer in published blocks — the rest is waiting for the DISCOM to buy it.` });
+    }
 
     const picked = [];
     let qtyRemaining = neededQty;
@@ -325,12 +369,10 @@ app.post("/api/pool/publish", async (req, res) => {
     // getting blocked from ever topping up the requirement, even though
     // the requirement's aggregation was already genuinely multi-seller
     // overall, just not from this one later top-up alone.
-    const isTopUp = requirement && (requirement.fulfilled_qty || 0) > 0;
-    if (members.length < 2 && !isTopUp) {
-      return res.status(400).json({ error: "pool a least 2 small offers before publishing a block" });
-    }
+    // One offer is enough: a single large prosumer can still use an aggregator
+    // as the intermediary that packages, prices and sells their energy.
     if (members.length < 1) {
-      return res.status(400).json({ error: "pool at least 1 small offer before publishing a block" });
+      return res.status(400).json({ error: "Pool at least one seller offer before publishing a block" });
     }
 
     // Re-verify every member right before publishing — see
@@ -350,6 +392,12 @@ app.post("/api/pool/publish", async (req, res) => {
     }
 
     const totalQty = round2(members.reduce((s, m) => s + m.enrolled_qty, 0));
+    if (requirement) {
+      const stillUncovered = round2(requirement.quantity_kwh - (requirement.fulfilled_qty || 0) - openQtyFor(requirement.id));
+      if (totalQty > stillUncovered + 0.011) {
+        return res.status(409).json({ error: `This pool is ${totalQty} kWh but only ${Math.max(0, stillUncovered)} kWh of ${requirement.id} is still uncovered (the rest is bought or already on offer) — reduce the pool so you don't oversell the requirement.` });
+      }
+    }
     const blendedBase = members.reduce((s, m) => s + m.enrolled_qty * m.price_per_kwh, 0) / totalQty;
     const blockPrice = round2(blendedBase + margin);
 
@@ -367,10 +415,25 @@ app.post("/api/pool/publish", async (req, res) => {
 
     const offerId = `offer-agg-${beckn.uuid().slice(0, 8)}`;
 
+    // Reserve every member's pooled quantity on its seller BEFORE publishing,
+    // so those kWh can no longer be sold directly while they sit inside this
+    // block. All-or-nothing: any failure gives back what was already taken.
+    const reserved = [];
+    const releaseReserved = async () => { for (const r of reserved) await sellerCall("/api/release", { offerId: r.offer_id, qty: r.enrolled_qty }); };
+    for (const m of members) {
+      const r = await sellerCall("/api/reserve", { offerId: m.offer_id, qty: m.enrolled_qty });
+      if (!r.ok) {
+        await releaseReserved();
+        return res.status(409).json({ error: `Could not reserve ${m.enrolled_qty} kWh on ${m.offer_id}: ${r.error || "seller-app refused"}. Nothing was published.` });
+      }
+      reserved.push(m);
+    }
+
     const { context, message } = beckn.buildPublishCatalog({ offerId, quantityKwh: totalQty, pricePerKwh: blockPrice, memberCount: members.length });
     const result = await beckn.postToOnix("/bpp/caller/catalog/publish", { context, message });
     if (!result.ok) {
       console.error("publish rejected by onix-aggregatorapp:", result.status, result.text);
+      await releaseReserved();
       return res.status(result.status || 502).json({ error: extractOnixError(result), detail: result.json, raw: result.text });
     }
 
@@ -404,7 +467,7 @@ app.post("/api/pool/publish", async (req, res) => {
 // this catalog exactly the same way it already checks seller-app's. ----------
 app.get("/api/offers", (req, res) => {
   const rows = db
-    .prepare("SELECT id, total_quantity_kwh AS quantity_kwh, remaining_qty, blended_price_per_kwh AS price_per_kwh, published_at FROM blocks ORDER BY published_at DESC")
+    .prepare("SELECT id, total_quantity_kwh AS quantity_kwh, remaining_qty, blended_price_per_kwh AS price_per_kwh, published_at, requirement_id AS reserved_for FROM blocks ORDER BY published_at DESC")
     .all();
   res.json(rows);
 });
@@ -442,12 +505,40 @@ app.post("/api/webhook/:action", async (req, res) => {
       const blockId = contract?.commitments?.[0]?.offer?.id || "unknown-block";
       const block = db.prepare("SELECT * FROM blocks WHERE id=?").get(blockId);
 
+      if (db.prepare("SELECT 1 FROM trades WHERE transaction_id=?").get(context.transactionId)) {
+        // Replayed init for a trade we already hold -- must not decrement the
+        // block (or the requirement) a second time.
+        return res.status(200).json(beckn.buildAck(context));
+      }
+
+      if (block && block.requirement_id && !String(context?.bapUri || "").includes("gridapp")) {
+        // A block published to serve a DISCOM's requirement is reserved for
+        // that DISCOM. The Beckn catalog is public so other platforms can SEE it,
+        // but only the requirement's own buyer may transact on it.
+        const why = `Block ${blockId} is reserved for DISCOM requirement ${block.requirement_id} — only that buyer can purchase it`;
+        logEvent(blockId, `Declined — ${why}`);
+        notifyBuyerOfDecline(context, context.transactionId, why);
+        return res.status(200).json(beckn.buildAck(context));
+      }
+
+      if (block && requestedQty && requestedQty <= block.remaining_qty && price != null && price < block.blended_price_per_kwh - 0.001) {
+        // The block's price already includes the margin that pays the pooled
+        // sellers; unlike a seller-app offer there is no negotiation here
+        // (see /api/about). Auto-accepting a lower bid used to sell the block
+        // below what the sellers are owed, i.e. at a loss to the aggregator.
+        const why = `Bid ₹${price}/kWh is below this block's fixed price of ₹${block.blended_price_per_kwh}/kWh — pooled blocks are not negotiable`;
+        logEvent(blockId, `Declined — ${why}`);
+        notifyBuyerOfDecline(context, context.transactionId, why);
+        return res.status(200).json(beckn.buildAck(context));
+      }
+
       if (!block || !requestedQty || requestedQty > block.remaining_qty) {
         // Same category as seller-app's own "decline" path: no response
         // sent back is valid Beckn behavior. Likely only reachable via a
         // race (two inits for the same block in quick succession) since
         // buyer-app's own pre-flight already checks remaining_qty first.
         logEvent(blockId, `Declined (no response sent) — requested ${requestedQty ?? "?"} kWh exceeds ${block ? block.remaining_qty : "(block not found)"} kWh remaining`);
+        notifyBuyerOfDecline(context, context.transactionId, `Requested ${requestedQty ?? "?"} kWh exceeds the ${block ? block.remaining_qty : 0} kWh remaining on this block`);
         return res.status(200).json(beckn.buildAck(context));
       }
 
@@ -490,17 +581,23 @@ app.post("/api/webhook/:action", async (req, res) => {
         .catch((e) => console.error("on_init send error:", e));
     } else if (action === "confirm") {
       const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId);
-      if (row) {
+      if (row && row.status !== "AWAITING_CONFIRM") {
+        logEvent(row.block_id, `Ignored a confirm -- trade is ${row.status}, not awaiting one`);
+      } else if (row) {
         logEvent(row.block_id, "Buyer confirmed");
         const onConfirm = beckn.buildOnConfirm(context, message.contract);
         beckn
           .postToOnix("/bpp/caller/on_confirm", onConfirm)
           .then((result) => {
+            if (!result.ok) {
+              console.error("on_confirm send failed:", result.status, result.json);
+              logEvent(row.block_id, `on_confirm NOT sent -- network rejected it: ${extractOnixError(result)}`);
+              return;
+            }
             const now = beckn.nowIso();
             db.prepare("UPDATE trades SET status=?, raw_context=?, updated_at=? WHERE transaction_id=?").run("ACTIVE", JSON.stringify(onConfirm), now, context.transactionId);
             logEvent(row.block_id, "Trade is now ACTIVE");
             broadcast("active", tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(context.transactionId)));
-            if (!result.ok) console.error("on_confirm send failed:", result.status, result.json);
           })
           .catch((e) => console.error("on_confirm send error:", e));
       }
@@ -512,23 +609,113 @@ app.post("/api/webhook/:action", async (req, res) => {
   }
 });
 
+// Direct app-to-app notice from a bulk buyer (NOT a Beckn message): its confirm
+// failed on the network, so the block capacity and requirement quantity this
+// app already counted at init must be handed back.
+app.post("/api/notify/:transactionId", (req, res) => {
+  const { event, reason } = req.body || {};
+  const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(req.params.transactionId);
+  if (!row) return res.status(404).json({ error: "trade not found" });
+  if ((event === "confirm_failed" || event === "counter_declined") && row.status === "AWAITING_CONFIRM") {
+    const blockBefore = db.prepare("SELECT * FROM blocks WHERE id=?").get(row.block_id);
+    if (blockBefore && (blockBefore.withdrawn_qty || 0) > 0) {
+      // The block was already withdrawn from the market: the kWh go back to the
+      // sellers, not onto a block nobody can buy any more.
+      releaseToSellers(blockBefore, row.requested_qty).catch(() => {});
+      db.prepare("UPDATE blocks SET withdrawn_qty = withdrawn_qty + ? WHERE id=?").run(row.requested_qty, row.block_id);
+    } else {
+      db.prepare("UPDATE blocks SET remaining_qty = MIN(total_quantity_kwh, remaining_qty + ?) WHERE id=?").run(row.requested_qty, row.block_id);
+    }
+    const block = db.prepare("SELECT * FROM blocks WHERE id=?").get(row.block_id);
+    if (block?.requirement_id) {
+      db.prepare("UPDATE requirements SET fulfilled_qty = MAX(0, fulfilled_qty - ?), status = CASE WHEN status='FULFILLED' THEN 'PUBLISHED' ELSE status END WHERE id=?").run(row.requested_qty, block.requirement_id);
+    }
+    db.prepare("UPDATE trades SET status=?, updated_at=? WHERE transaction_id=?").run("DECLINED", beckn.nowIso(), row.transaction_id);
+    logEvent(row.block_id, `Buyer's confirm failed${reason ? ` (${reason})` : ""} — ${row.requested_qty} kWh returned to the block`);
+    broadcast("block_published", { id: row.block_id });
+  }
+  res.json({ ok: true });
+});
+
+// How a trade's quantity is shared between the pooled sellers: pro-rata to what
+// each enrolled, rounded to 2 dp, the last seller absorbing the rounding so the
+// shares add up to exactly the traded quantity.
+function tradeAllocations(members, requestedQty) {
+  const total = members.reduce((s, m) => s + m.enrolled_qty, 0);
+  let left = round2(requestedQty);
+  return members.map((m, i) => {
+    const alloc = i === members.length - 1 ? left : round2((m.enrolled_qty * requestedQty) / total);
+    left = round2(left - alloc);
+    return { m, alloc: Math.max(0, alloc) };
+  });
+}
+
+// Hand kWh of a block back to the pooled sellers it was reserved from.
+async function releaseToSellers(block, qty) {
+  const members = db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(block.id);
+  const allocs = tradeAllocations(members, qty);
+  for (const { m, alloc } of allocs) if (alloc > 0) await sellerCall("/api/release", { offerId: m.offer_id, qty: alloc });
+}
+
 app.get("/api/deliver/:transactionId/suggest", (req, res) => {
   const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(req.params.transactionId);
   if (!row) return res.status(404).json({ error: "trade not found" });
-  const suggested = Math.round(row.requested_qty * (0.85 + Math.random() * 0.2) * 10) / 10;
-  res.json({ requestedQty: row.requested_qty, suggestedFinalAlloc: suggested });
+  const members = db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(row.block_id);
+  const allocs = tradeAllocations(members, row.requested_qty);
+  // Demo data: most sellers meter exactly their share and ONE comes up short --
+  // which is what real under-delivery looks like (one inverter/meter, not all).
+  const weak = allocs.length > 1 ? Math.floor(Math.random() * allocs.length) : 0;
+  const readings = allocs.map(({ m, alloc }, i) => ({
+    offerId: m.offer_id, sellerId: m.seller_id, pricePerKwh: m.price_per_kwh, allocatedKwh: alloc,
+    suggestedKwh: i === weak ? round2(alloc * (0.7 + Math.random() * 0.2)) : alloc,
+  }));
+  res.json({ requestedQty: row.requested_qty, readings, suggestedFinalAlloc: round2(readings.reduce((s, r) => s + r.suggestedKwh, 0)) });
+});
+
+app.get("/api/deliver/:transactionId/allocations", (req, res) => {
+  const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(req.params.transactionId);
+  if (!row) return res.status(404).json({ error: "trade not found" });
+  const members = db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(row.block_id);
+  res.json({ requestedQty: row.requested_qty, allocations: tradeAllocations(members, row.requested_qty).map(({ m, alloc }) => ({ offerId: m.offer_id, sellerId: m.seller_id, pricePerKwh: m.price_per_kwh, allocatedKwh: alloc })) });
 });
 
 // ---------- Report delivery: real on_status (settled) ----------
+// Delivery is reported PER SELLER, from each pooled seller's own meter. The
+// total that goes to the network (and the bulk buyer) is the sum of those
+// readings, each capped at that seller's allocated share -- energy beyond the
+// contracted share is not paid for. A single-total report (finalAlloc) is still
+// accepted for simple use; it is spread pro-rata and said so in the log.
+const delivering = new Set();
 app.post("/api/deliver/:transactionId", async (req, res) => {
   const { transactionId } = req.params;
   const row = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId);
   if (!row) return res.status(404).json({ error: "trade not found" });
   if (row.status !== "ACTIVE") return res.status(409).json({ error: `trade is ${row.status}, not ACTIVE` });
+  // A double-click on "Report delivery" must not send a second on_status.
+  if (delivering.has(transactionId)) return res.status(409).json({ error: "delivery for this trade is already being reported" });
 
-  const finalAlloc = Number(req.body.finalAlloc);
-  if (!finalAlloc || finalAlloc <= 0) return res.status(400).json({ error: "finalAlloc (the delivered kWh reading) must be a positive number" });
+  const members = db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(row.block_id);
+  const allocs = tradeAllocations(members, row.requested_qty);
+  const readings = {};
+  let finalAlloc;
+  if (Array.isArray(req.body?.readings)) {
+    for (const { m, alloc } of allocs) {
+      const r = req.body.readings.find((x) => x.offerId === m.offer_id);
+      const kwh = Number(r?.kwh);
+      if (!r || !Number.isFinite(kwh) || kwh < 0) return res.status(400).json({ error: `A valid meter reading (kWh, 0 or more) is required for ${m.offer_id}` });
+      readings[m.offer_id] = round2(Math.min(kwh, alloc));
+    }
+    finalAlloc = round2(Object.values(readings).reduce((s, v) => s + v, 0));
+  } else {
+    const total = Number(req.body?.finalAlloc);
+    if (!Number.isFinite(total) || total <= 0) return res.status(400).json({ error: "Provide a meter reading for every pooled seller (readings), or a positive total (finalAlloc)" });
+    finalAlloc = round2(Math.min(total, row.requested_qty));
+    for (const { m, alloc } of allocs) readings[m.offer_id] = round2((alloc * finalAlloc) / row.requested_qty);
+    finalAlloc = round2(Object.values(readings).reduce((s, v) => s + v, 0));
+  }
+  if (finalAlloc <= 0) return res.status(400).json({ error: "Total delivered is 0 kWh — nothing to settle. Enter at least one seller's reading." });
 
+  delivering.add(transactionId);
   try {
     const stored = JSON.parse(row.raw_context);
     const { shortfallKwh, wheelingSeller, penalty, sellerReceivable } = computeSettlement({ requestedQty: row.requested_qty, finalAlloc, pricePerKwh: row.price_per_kwh });
@@ -542,17 +729,125 @@ app.post("/api/deliver/:transactionId", async (req, res) => {
     if (!result.ok) { console.error("on_status rejected by onix-aggregatorapp:", result.status, result.text); return res.status(result.status || 502).json({ error: extractOnixError(result), detail: result.json, raw: result.text }); }
 
     const now = beckn.nowIso();
-    db.prepare("UPDATE trades SET status=?, final_alloc=?, settlement_amount=?, raw_context=?, updated_at=? WHERE transaction_id=?").run(
-      "SETTLED", finalAlloc, settlementAmount, JSON.stringify(onStatus), now, transactionId
+    db.prepare("UPDATE trades SET status=?, final_alloc=?, settlement_amount=?, readings=?, raw_context=?, updated_at=? WHERE transaction_id=?").run(
+      "SETTLED", finalAlloc, settlementAmount, JSON.stringify(readings), JSON.stringify(onStatus), now, transactionId
     );
-    logEvent(row.block_id, `Reported ${finalAlloc} kWh delivered — settled ₹${settlementAmount.toFixed(2)} — disaggregation now available`);
+    logEvent(row.block_id, `Reported ${finalAlloc} kWh delivered (from ${allocs.length} seller meter readings) — settled ₹${settlementAmount.toFixed(2)} — disaggregation now available`);
     const updated = tradeRow(db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId));
     broadcast("settled", updated);
     res.json({ ok: true, trade: updated });
+    creditSellers(transactionId).catch((e) => console.error("credit sellers failed:", e));
   } catch (err) {
     console.error("deliver failed:", err);
     res.status(500).json({ error: String(err) });
+  } finally {
+    delivering.delete(transactionId);
   }
+});
+
+// Pay every pooled seller their own share into THEIR wallet on the Seller
+// Platform (idempotent there, so a retry can never double-pay).
+async function creditSellers(transactionId) {
+  const trade = db.prepare("SELECT * FROM trades WHERE transaction_id=?").get(transactionId);
+  const block = db.prepare("SELECT * FROM blocks WHERE id=?").get(trade.block_id);
+  const members = db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(block.id);
+  const d = disaggregate(block, members, trade);
+  for (const m of d.memberPayouts || []) {
+    const body = { transactionId, blockId: block.id, offerId: m.offerId, allocatedKwh: m.allocatedQty, deliveredKwh: m.deliveredShare, gross: m.gross, wheeling: m.wheeling, penalty: m.penalty, net: m.net };
+    let r = await sellerCall("/api/credit", body);
+    if (!r.ok) { await new Promise((ok) => setTimeout(ok, 3000)); r = await sellerCall("/api/credit", body); }
+    if (!r.ok) logEvent(block.id, `Could not credit ₹${m.net.toFixed(2)} to ${m.offerId}: ${r.error || "seller platform unreachable"}`);
+  }
+}
+
+// Pull the unsold part of a block off the market and hand that capacity back to
+// the pooled sellers, so it can be sold directly or pooled again.
+app.post("/api/blocks/:id/withdraw", async (req, res) => {
+  const block = db.prepare("SELECT * FROM blocks WHERE id=?").get(req.params.id);
+  if (!block) return res.status(404).json({ error: "block not found" });
+  const unsold = round2(block.remaining_qty);
+  if (unsold <= 0.001) return res.status(409).json({ error: "Nothing unsold on this block — nothing to withdraw." });
+  // Claim it first so a second click / a racing buyer can't also take it.
+  db.prepare("UPDATE blocks SET remaining_qty = 0, withdrawn_qty = COALESCE(withdrawn_qty,0) + ? WHERE id=?").run(unsold, block.id);
+  await releaseToSellers(block, unsold);
+  logEvent(block.id, `Withdrew ${unsold} kWh unsold from the market — capacity handed back to the pooled sellers`);
+  broadcast("block_published", { id: block.id });
+  res.json({ ok: true, withdrawnKwh: unsold });
+});
+
+// Reserve an open-market block for a DISCOM requirement after the fact (e.g. it
+// was published with "None" by mistake), so the DISCOM's own dashboard can buy it.
+app.post("/api/blocks/:id/assign", (req, res) => {
+  const block = db.prepare("SELECT * FROM blocks WHERE id=?").get(req.params.id);
+  if (!block) return res.status(404).json({ error: "block not found" });
+  const requirementId = req.body?.requirementId;
+  const requirement = db.prepare("SELECT * FROM requirements WHERE id=?").get(requirementId);
+  if (!requirement) return res.status(404).json({ error: "requirement not found" });
+  if (block.requirement_id) return res.status(409).json({ error: `Block is already reserved for ${block.requirement_id}` });
+  if (requirement.status === "FULFILLED") return res.status(409).json({ error: `${requirement.id} is already fully bought` });
+  if (block.blended_price_per_kwh > requirement.max_price_per_kwh) return res.status(409).json({ error: `Block price ₹${block.blended_price_per_kwh}/kWh is above ${requirement.id}'s ₹${requirement.max_price_per_kwh}/kWh ceiling` });
+  if (block.remaining_qty <= 0.001) return res.status(409).json({ error: "This block has nothing left to sell" });
+  const uncovered = round2(requirement.quantity_kwh - (requirement.fulfilled_qty || 0) - openQtyFor(requirement.id));
+  if (block.remaining_qty > uncovered + 0.011) return res.status(409).json({ error: `Only ${Math.max(0, uncovered)} kWh of ${requirement.id} is still uncovered, but this block has ${block.remaining_qty} kWh unsold — withdraw part of it first or pick another requirement.` });
+  db.prepare("UPDATE blocks SET requirement_id=? WHERE id=?").run(requirement.id, block.id);
+  db.prepare("UPDATE requirements SET status=?, block_id=? WHERE id=? AND status != ?").run("PUBLISHED", block.id, requirement.id, "FULFILLED");
+  logEvent(block.id, `Reserved for DISCOM requirement ${requirement.id}`);
+  broadcast("block_published", { id: block.id });
+  res.json({ ok: true });
+});
+
+// The aggregator's wallet history: one entry per settled trade, showing the
+// whole chain -- what the bulk buyer paid, what the aggregator received, what
+// went to each pooled seller, and what was left.
+app.get("/api/wallet/history", (req, res) => {
+  const entries = [];
+  for (const t of db.prepare("SELECT * FROM trades WHERE status IN ('SETTLED','ACTIVE')").all()) {
+    const block = db.prepare("SELECT * FROM blocks WHERE id=?").get(t.block_id);
+    if (!block) continue;
+    const members = db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(block.id);
+    const buyer = t.bap_id === "buyerapp.example.com" ? "bulk buyer" : t.bap_id;
+    if (t.status === "ACTIVE") {
+      entries.push({ id: t.transaction_id, at: t.updated_at, kind: "pending", amount: null, title: `Block ${block.id}`, subtitle: `${t.requested_qty} kWh @ ₹${t.price_per_kwh}/kWh to ${buyer} — waiting for delivery`, transactionId: t.transaction_id,
+        lines: [L("Sold", `${t.requested_qty} kWh @ ₹${t.price_per_kwh}/kWh`), L("Planned margin if delivered in full", `₹${block.margin_per_kwh}/kWh × ${t.requested_qty} kWh = ${inr(round2(block.margin_per_kwh * t.requested_qty))}`), L("Status", "Nothing is credited or paid out until you report each seller's meter reading")] });
+      continue;
+    }
+    const d = disaggregate(block, members, t);
+    const lines = [
+      L("Bulk buyer paid", inr(d.buyerPayable), { strong: true }),
+      L(`energy ${d.finalAlloc} kWh × ₹${d.pricePerKwh}/kWh = ${inr(d.tradeValue)}, plus buyer-side wheeling ${inr(d.wheelingBuyerTotal)} (wheeling goes to the network)`, "", { note: true }),
+      L("Aggregator received (as the publishing seller)", inr(d.settlementAmount), { strong: true }),
+      L(`energy ${inr(d.tradeValue)} − seller-side wheeling ${inr(d.wheelingSellerTotal)}${d.penalty > 0 ? ` − shortfall penalty ${inr(d.penalty)}` : ""}`, "", { note: true }),
+    ];
+    for (const m of d.memberPayouts) {
+      lines.push(L(`− Paid to ${m.offerId}: ${m.deliveredShare} of ${m.allocatedQty} kWh delivered`, inr(-m.net)));
+      lines.push(L(`gross ${m.deliveredShare} kWh × ₹${m.originalPricePerKwh} = ${inr(m.gross)} − wheeling ${inr(m.wheeling)}${m.penalty > 0 ? ` − their shortfall penalty ${inr(m.penalty)}` : ""}`, "", { note: true }));
+    }
+    lines.push(L("= Margin kept (received − paid to sellers)", inr(d.aggregatorMargin), { strong: true }));
+    const planned = round2(block.margin_per_kwh * d.finalAlloc);
+    const mix = round2(d.aggregatorMargin - planned);
+    lines.push(L(`Planned margin: ₹${block.margin_per_kwh}/kWh × ${d.finalAlloc} kWh delivered`, inr(planned)));
+    if (Math.abs(mix) > 0.005) {
+      lines.push(L(`Difference vs plan`, inr(mix)));
+      lines.push(L("Why it differs", "The block price was set from the average of the sellers' prices if everyone delivered their share. Here the sellers delivered different amounts, so the delivered energy cost the aggregator a different average price than planned — the gap is exactly that mix effect (and cents of rounding). Each seller's penalty is charged to that seller, not to the aggregator.", { note: true }));
+    }
+    entries.push({ id: t.transaction_id, at: t.updated_at, kind: "settled", amount: d.aggregatorMargin, title: `Block ${block.id}`, subtitle: `${d.finalAlloc} of ${t.requested_qty} kWh delivered to ${buyer} · paid ${d.memberPayouts.length} seller${d.memberPayouts.length === 1 ? "" : "s"}`, transactionId: t.transaction_id, lines });
+  }
+  res.json(finish(entries));
+});
+
+// The aggregator's wallet: cash received from bulk buyers, cash paid out to
+// pooled sellers, and what it kept.
+app.get("/api/wallet", (req, res) => {
+  let received = 0, paidOut = 0;
+  for (const t of db.prepare("SELECT * FROM trades WHERE status='SETTLED'").all()) {
+    const block = db.prepare("SELECT * FROM blocks WHERE id=?").get(t.block_id);
+    if (!block) continue;
+    const d = disaggregate(block, db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(block.id), t);
+    received += t.settlement_amount || 0;
+    paidOut += d.sumMemberNet || 0;
+  }
+  const inEscrow = db.prepare("SELECT COALESCE(SUM(requested_qty * price_per_kwh),0) AS v FROM trades WHERE status='ACTIVE'").get().v;
+  res.json({ total: round2(received - paidOut), received: round2(received), paidOut: round2(paidOut), inEscrow: round2(inEscrow) });
 });
 
 // ---------- Blocks list + disaggregation ----------
@@ -569,13 +864,20 @@ function disaggregate(block, members, trade) {
   const requestedQty = trade.requested_qty;
   const pricePerKwh = trade.price_per_kwh;
   const bulk = computeSettlement({ requestedQty, finalAlloc, pricePerKwh });
-  const deliveryRatio = block.total_quantity_kwh > 0 ? finalAlloc / block.total_quantity_kwh : 0;
-  const memberPayouts = members.map((m) => {
-    const delivered = round2(m.enrolled_qty * deliveryRatio);
+  const deliveryRatio = requestedQty > 0 ? finalAlloc / requestedQty : 0;
+  const readings = (() => { try { return trade.readings ? JSON.parse(trade.readings) : null; } catch (_) { return null; } })();
+  const memberPayouts = tradeAllocations(members, requestedQty).map(({ m, alloc }) => {
+    // Each seller is settled on THEIR OWN metered delivery. (Rows from before
+    // per-seller readings existed fall back to an even pro-rata split.)
+    const delivered = round2(Math.min(alloc, readings && readings[m.offer_id] != null ? readings[m.offer_id] : alloc * deliveryRatio));
+    const shortfall = round2(alloc - delivered);
     const gross = round2(delivered * m.price_per_kwh);
     const wheeling = round2(delivered * WHEELING_CHARGE_SELLER_PER_KWH);
-    const net = round2(gross - wheeling);
-    return { offerId: m.offer_id, sellerId: m.seller_id, originalPricePerKwh: m.price_per_kwh, enrolledQty: m.enrolled_qty, deliveredShare: delivered, gross, wheeling, net };
+    // The shortfall penalty falls on the seller who caused it, not on the
+    // aggregator or on the sellers who delivered in full.
+    const penalty = round2(shortfall * PENALTY_RATE_PER_KWH);
+    const net = round2(gross - wheeling - penalty);
+    return { offerId: m.offer_id, sellerId: m.seller_id, originalPricePerKwh: m.price_per_kwh, enrolledQty: m.enrolled_qty, allocatedQty: alloc, deliveredShare: delivered, shortfall, gross, wheeling, penalty, net };
   });
   const sumMemberNet = round2(memberPayouts.reduce((s, m) => s + m.net, 0));
   const aggregatorMargin = round2(settlementAmount - sumMemberNet);
@@ -586,7 +888,9 @@ function disaggregate(block, members, trade) {
   // way the flat per-kWh rate never accounted for (see KNOWLEDGE-BASE.md
   // §9 risk #2 — this is that gap, shown numerically rather than just
   // asserted).
-  const intendedMargin = round2(block.margin_per_kwh * block.total_quantity_kwh);
+  // Per trade: a block can be sold in several separate trades, and the margin
+  // intended on THIS trade is the rate times the quantity THIS trade bought.
+  const intendedMargin = round2(block.margin_per_kwh * requestedQty);
   return {
     status, finalAlloc, settlementAmount, deliveryRatio: round2(deliveryRatio), memberPayouts, sumMemberNet, aggregatorMargin,
     requestedQty, pricePerKwh, shortfallKwh: bulk.shortfallKwh, tradeValue: bulk.tradeValue,
@@ -599,6 +903,22 @@ function latestTradeForBlock(blockId) {
   return db.prepare("SELECT * FROM trades WHERE block_id=? ORDER BY created_at DESC LIMIT 1").get(blockId);
 }
 
+// Every trade against a block, each with its own settlement breakdown. A
+// block can be sold in more than one trade (e.g. part to grid-app, the rest
+// to buyer-app); showing only the latest one hid earlier ACTIVE trades, which
+// then could never have their delivery reported.
+function tradesForBlock(block, members) {
+  return db.prepare("SELECT * FROM trades WHERE block_id=? AND status != 'DECLINED' ORDER BY created_at ASC").all(block.id).map((t) => ({
+    transactionId: t.transaction_id,
+    bapId: t.bap_id,
+    requestedQty: t.requested_qty,
+    pricePerKwh: t.price_per_kwh,
+    status: t.status,
+    allocations: t.status === "ACTIVE" ? tradeAllocations(members, t.requested_qty).map(({ m, alloc }) => ({ offerId: m.offer_id, sellerId: m.seller_id, pricePerKwh: m.price_per_kwh, allocatedKwh: alloc })) : [],
+    disaggregation: disaggregate(block, members, t),
+  }));
+}
+
 app.get("/api/blocks", (req, res) => {
   try {
     const blocks = db.prepare("SELECT * FROM blocks ORDER BY published_at DESC").all();
@@ -607,9 +927,11 @@ app.get("/api/blocks", (req, res) => {
       const members = db.prepare("SELECT * FROM pool_members WHERE block_id=?").all(b.id);
       return {
         ...b,
+        reserved_for_requirement: b.requirement_id || null,
         activeTransactionId: trade && trade.status === "ACTIVE" ? trade.transaction_id : null,
         tradeStatus: trade ? trade.status : null,
         disaggregation: disaggregate(b, members, trade),
+        trades: tradesForBlock(b, members),
       };
     });
     res.json(out);
@@ -646,6 +968,24 @@ app.post("/api/reset", (req, res) => {
     console.error("reset failed:", err);
     res.status(500).json({ error: String(err) });
   }
+});
+
+// ---------- Reset the WHOLE demo: this platform, then every other one ----------
+// See seller-app/server.js's /api/reset-all for why a half-reset is illogical.
+app.post("/api/reset-all", async (req, res) => {
+  const results = { aggregator: "ok" };
+  try {
+    db.exec("DELETE FROM trades"); db.exec("DELETE FROM pool_members"); db.exec("DELETE FROM blocks");
+    db.exec("DELETE FROM requirements"); db.exec("DELETE FROM events");
+    broadcast("reset", {});
+  } catch (err) { results.aggregator = String(err); }
+  await Promise.all(Object.entries({ seller: SELLER_APP_URL, buyer: BUYER_APP_URL, grid: GRID_APP_URL }).map(async ([name, url]) => {
+    try {
+      const r = await fetch(`${url}/api/reset`, { method: "POST" });
+      results[name] = r.ok ? "ok" : `HTTP ${r.status}`;
+    } catch (e) { results[name] = `unreachable (${e.message || e})`; }
+  }));
+  res.json({ ok: Object.values(results).every((v) => v === "ok"), results });
 });
 
 server.listen(PORT, () => {

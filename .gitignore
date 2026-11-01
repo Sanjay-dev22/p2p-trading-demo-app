@@ -10,3 +10,9 @@ node_modules/
 # cloudflared, never something to commit.
 buyer-app/public-bap-uri.txt
 buyer-app/start-with-tunnel.sh
+
+# --- fresh-machine tooling ---
+# The upstream beckn/DEG devkit, downloaded by `npm run setup` (not our content).
+network/DEG-repo/
+# Logs / pid file written by `npm run up`.
+.run/

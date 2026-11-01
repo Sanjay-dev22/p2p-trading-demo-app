@@ -1,0 +1,11 @@
+# GridApp BPP-Receiver routing: status request from a seller-initiated
+# sub-tx would land here. Copied unchanged from BuyerApp-BppReceiver.yaml —
+# not exercised by the main live flow (same disclosed, harmless gap as
+# buyer-app's and aggregator-app's own copies of this module).
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://sandbox-buyerapp:3001/api/webhook"
+    endpoints:
+      - status

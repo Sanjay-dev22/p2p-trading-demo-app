@@ -1,0 +1,20 @@
+# GridApp (BAP) Receiver routing: on_* callbacks → grid-app
+# (p2p-trading-app/grid-app, a real Node app run as a plain host process,
+# not a container — reached via Docker Desktop's host.docker.internal DNS
+# name). Reuses buyerapp.example.com's registered signing identity (see
+# local-p2p-trading-gridapp.yaml) — only this routing target is new.
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://host.docker.internal:4004/api/bap-webhook"
+    endpoints:
+      - on_select
+      - on_init
+      - on_confirm
+      - on_status
+      - on_update
+      - on_cancel
+      - on_subscribe
+      - on_discover
+      - catalog

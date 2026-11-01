@@ -50,13 +50,15 @@
 <body>
 <header>
   <h1>Grid/DISCOM Platform <span class="role">— posts bulk energy requirements</span></h1>
+  <div style="display:flex;align-items:center;gap:16px"><div id="wallet" onclick="openWalletHistory('Wallet · DISCOM payments')" title="Click for transaction history. Cash the DISCOM has paid on block purchases that have settled" style="text-align:right;line-height:1.2;cursor:pointer"><div id="walletAmt" style="font-size:22px;font-weight:700;color:var(--accent,#7ee0a1)">₹0.00</div><div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">Wallet · paid (settled)</div><div id="walletSub" style="font-size:11px;color:var(--muted)"></div></div>
+  <button id="resetBtn" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);" title="Wipe all four dashboards (Seller, Buyer, Aggregator, Grid) for a fresh run">Reset demo</button></div>
 </header>
 <main>
 
   <div class="role-banner">
     <div class="role-banner-line"><b>Your role:</b> a grid operator / DISCOM representing bulk demand — the entity aggregation exists to serve.</div>
     <div class="role-banner-line"><b>Your job:</b> post a requirement (how much energy you need, and the most you'll pay per kWh), then buy the block aggregator-app publishes to fulfill it — yourself, with your own real Beckn identity (reusing buyer-app's already-registered keys, a new routing address — see KNOWLEDGE-BASE.md §9's Phase 2).</div>
-    <div class="role-banner-line"><b>Note:</b> buyer-app is a separate, independent bulk buyer with no special awareness of your requirements — it can see and buy the same public block too. Whoever confirms first gets it; if that's buyer-app, your requirement stays unfulfilled until a fresh pool is recommended.</div>
+    <div class="role-banner-line"><b>Note:</b> a block the aggregator publishes <i>for your requirement</i> is reserved for you — other platforms can see it on the public catalog but the aggregator declines them. If supply is short the aggregator publishes what it can, and the rest of your requirement stays open for other aggregators or later top-ups.</div>
   </div>
 
   <div class="panel">
@@ -133,14 +135,34 @@ async function loadRequirements() {
     // the first purchase, even when the requirement was only partly met).
     const canBuy = r.status !== "FULFILLED";
     const inFlight = buyingInProgress.has(r.id);
+    // What the aggregator has actually put on offer for this requirement, and
+    // how much of the ask nobody has offered yet.
+    const blocks = r.blocks || [];
+    const offered = r.published_qty || 0;
+    const stillOpen = Math.max(0, Math.round((r.quantity_kwh - offered) * 100) / 100);
+    const partial = r.status === "PUBLISHED" && stillOpen > 0.001;
+    const label = partial ? "PARTLY COVERED" : r.status;
+    const blockLines = blocks.map((b) =>
+      `<div class="secondary" style="margin-top:2px">▸ Block ${b.id}: ${b.quantity_kwh} kWh @ ₹${b.price_per_kwh}/kWh (${b.member_count} seller${b.member_count === 1 ? "" : "s"} pooled) · ${b.remaining_qty} kWh still available</div>`
+    ).join("");
+    const gapLine = partial && bought < r.quantity_kwh
+      ? `<div class="secondary" style="margin-top:2px;color:var(--amber, #b7791f)">⚠ Only ${offered} of ${r.quantity_kwh} kWh is on offer — ${stillOpen} kWh is still unmet and open to other aggregators / later top-ups.</div>`
+      : "";
+    const waitLine = !blocks.length && r.status !== "FULFILLED"
+      ? `<div class="secondary" style="margin-top:2px">Waiting for an aggregator to publish a block for this requirement…</div>`
+      : "";
+    const buyable = blocks.some((b) => b.remaining_qty > 0);
+    const soldLine = blocks.length && !buyable && r.status !== "FULFILLED"
+      ? `<div class="secondary" style="margin-top:2px">Every block published so far is sold out — waiting for the aggregator to publish the remaining ${Math.max(0, Math.round((r.quantity_kwh - (r.fulfilled_qty || 0)) * 100) / 100)} kWh. It will appear here with a Buy button.</div>` : "";
     return `
     <div class="row">
       <div class="meta">
         <div class="primary">${r.id}</div>
         <div class="secondary">${r.quantity_kwh} kWh needed · ceiling ₹${r.max_price_per_kwh}/kWh${progress}</div>
+        ${blockLines}${gapLine}${waitLine}${soldLine}
       </div>
-      <span class="badge ${badgeClass(r.status)}">${r.status}</span>
-      ${canBuy ? `<button data-buy="${r.id}" ${inFlight ? "disabled" : ""}>${inFlight ? "Buying…" : "Buy available energy"}</button>` : ""}
+      <span class="badge ${badgeClass(r.status)}">${label}</span>
+      ${canBuy && buyable ? `<button data-buy="${r.id}" ${inFlight ? "disabled" : ""}>${inFlight ? "Buying…" : "Buy available energy"}</button>` : ""}
     </div>`;
   }).join("");
   el.querySelectorAll("button[data-buy]").forEach((btn) => {
@@ -173,7 +195,7 @@ async function loadTrades() {
     <div class="row">
       <div class="meta">
         <div class="primary">${t.offerId} <span style="color:var(--muted); font-weight:400;">for ${t.requirementId}</span></div>
-        <div class="secondary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh${t.settlementAmount != null ? ` · settled ₹${t.settlementAmount.toFixed(2)}` : ""}</div>
+        <div class="secondary">${t.requestedQty} kWh @ ₹${t.pricePerKwh}/kWh${t.settlementAmount != null ? ` · settled ₹${t.settlementAmount.toFixed(2)}` : ""}${t.errorMessage ? ` · <span style="color:var(--red)">${String(t.errorMessage).replace(/</g, "&lt;")}</span>` : ""}</div>
       </div>
       <span class="badge ${tradeBadgeClass(t.status)}">${t.status}</span>
     </div>`).join("");
@@ -191,6 +213,21 @@ $("#postForm").onsubmit = async (e) => {
   } catch (err) { toast(`Failed: ${err.message}`); }
 };
 
+
+async function resetDemo(afterReset) {
+  if (!confirm("Reset the WHOLE demo? This wipes every offer, pool, block, requirement and trade on ALL FOUR dashboards (Seller, Buyer, Aggregator, Grid/DISCOM). It can't be undone.")) return;
+  try {
+    const res = await fetch("/api/reset-all", { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { toast("Reset failed: " + (body.error || res.status)); return; }
+    const bad = Object.entries(body.results || {}).filter(([, v]) => v !== "ok");
+    toast(bad.length ? "Reset partly done — " + bad.map(([k, v]) => k + ": " + v).join("; ") : "Whole demo reset — all four dashboards are clean");
+  } catch (e) { toast("Reset failed: " + (e.message || e)); }
+  if (afterReset) afterReset();
+}
+
+$("#resetBtn").addEventListener("click", () => resetDemo(() => refresh()));
+
 async function refresh() {
   await loadTrades();
   await loadRequirements();
@@ -198,6 +235,15 @@ async function refresh() {
 
 setInterval(refresh, 4000);
 refresh();
+async function loadWallet() {
+  try {
+    const w = await (await fetch("/api/wallet")).json();
+    document.getElementById("walletAmt").textContent = "₹" + Number(w.total).toFixed(2);
+    document.getElementById("walletSub").textContent = (w.inEscrow > 0 ? "₹" + Number(w.inEscrow).toFixed(2) + " committed, pending delivery" : "");
+  } catch (_) {}
+}
+loadWallet(); setInterval(loadWallet, 4000);
 </script>
+<script src="/wallet.js"></script>
 </body>
 </html>

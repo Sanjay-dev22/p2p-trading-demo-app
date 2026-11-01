@@ -53,7 +53,7 @@ function pointSellerDiscomAtRealLedger(contract) {
   return contract;
 }
 
-const ONIX_SELLER_BASE = process.env.ONIX_SELLER_URL || "http://localhost:8082";
+const ONIX_SELLER_BASE = process.env.ONIX_SELLER_URL || "http://localhost:18082";
 
 // Union of every schemaContext URL seen across the real example fixtures —
 // safe to always send the full set (extra, unused context URLs don't

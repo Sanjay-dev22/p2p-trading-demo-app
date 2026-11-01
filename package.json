@@ -1,0 +1,17 @@
+{
+  "name": "p2p-trading-demo-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Four independent apps (Seller, Buyer, Aggregator, Grid/DISCOM) trading energy over a real local Beckn/onix network. One-command setup and start.",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "up": "node scripts/demo.js up",
+    "up:tunnel": "node scripts/demo.js up --tunnel",
+    "down": "node scripts/demo.js down",
+    "down:all": "node scripts/demo.js down --all",
+    "status": "node scripts/demo.js status",
+    "reset": "node scripts/demo.js reset",
+    "test": "node scripts/demo.js test"
+  }
+}

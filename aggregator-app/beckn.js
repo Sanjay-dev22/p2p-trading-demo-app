@@ -108,10 +108,10 @@ function buildPublishCatalog({ offerId, quantityKwh, pricePerKwh, memberCount })
     catalogs: [
       {
         id: catalogId,
-        descriptor: { name: "Aggregated Energy Block (demo)", shortDesc: `Pooled block from ${memberCount} sellers — ${quantityKwh} kWh @ ₹${pricePerKwh}/kWh` },
+        descriptor: { name: "Aggregated Energy Block (demo)", shortDesc: `Pooled block from ${memberCount} seller${memberCount === 1 ? "" : "s"} — ${quantityKwh} kWh @ ₹${pricePerKwh}/kWh` },
         bppId: SELF_ID,
         bppUri: SELF_URI,
-        provider: { id: SELF_ID, descriptor: { name: `Aggregator — ${memberCount} sellers pooled` } },
+        provider: { id: SELF_ID, descriptor: { name: `Aggregator — ${memberCount} seller${memberCount === 1 ? "" : "s"} pooled` } },
         resources: [
           {
             id: "energy-resource-solar-001",
@@ -122,7 +122,7 @@ function buildPublishCatalog({ offerId, quantityKwh, pricePerKwh, memberCount })
         offers: [
           {
             id: offerId,
-            descriptor: { name: "Aggregated Block", shortDesc: `₹${pricePerKwh}/kWh — pooled from ${memberCount} sellers` },
+            descriptor: { name: "Aggregated Block", shortDesc: `₹${pricePerKwh}/kWh — pooled from ${memberCount} seller${memberCount === 1 ? "" : "s"}` },
             resourceIds: ["energy-resource-solar-001"],
             availableTo: [],
             offerAttributes: {
@@ -158,7 +158,7 @@ function buildPublishCatalog({ offerId, quantityKwh, pricePerKwh, memberCount })
             },
             provider: {
               id: SELF_ID,
-              descriptor: { name: `Aggregator — ${memberCount} sellers pooled` },
+              descriptor: { name: `Aggregator — ${memberCount} seller${memberCount === 1 ? "" : "s"} pooled` },
               providerAttributes: { "@context": "https://schema.nfh.global/EnergyCustomer/v2.0/context.jsonld", "@type": "EnergyCustomer", meterId: SELF_METER_ID, utilityCustomerId: SELF_CUST_ID },
             },
           },

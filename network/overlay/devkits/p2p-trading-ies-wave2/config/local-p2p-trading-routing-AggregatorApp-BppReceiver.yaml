@@ -1,0 +1,18 @@
+# AggregatorApp BPP-Receiver routing: BAP-originated requests (select,
+# init, confirm, status, update, cancel) for the aggregator's own pooled
+# block -> aggregator-app's own process on the host, not seller-app's.
+# This is the one piece of plumbing that actually separates the
+# aggregator's lifecycle from seller-app's (see onix-aggregatorapp in
+# docker-compose.yml and KNOWLEDGE-BASE.md's aggregation-v2 section).
+routingRules:
+  - version: "2.0.0"
+    targetType: "url"
+    target:
+      url: "http://host.docker.internal:4003/api/webhook"
+    endpoints:
+      - select
+      - init
+      - confirm
+      - status
+      - update
+      - cancel

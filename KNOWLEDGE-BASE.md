@@ -260,6 +260,11 @@ including our own just-published one.
   and 9 real ledger-verified historical trades, independently queried
   from `https://ies-p2p-energy-ledger.beckn.io`.
 
+> **Superseded by tooling (2026-11-02):** `npm run up` (or `npm run up:tunnel`) now does all of the
+> steps below, in the right order, and `seller-app` now defaults to onix port `18082`, so the
+> `ONIX_SELLER_URL` override is no longer needed when using this repo's compose file. The manual
+> list is kept because it explains *why* each step exists.
+
 ### Operational checklist after any Docker Desktop / machine restart
 None of the following survive a restart and must be redone manually —
 docker-compose only manages the 12 containers, not these host-side
@@ -1000,3 +1005,42 @@ regression (hand-verified exact, same as every prior pass).
   here simulated per-side as `onix-sellerdiscom`/`onix-buyerdiscom` plus
   their own ledger sandboxes, representing the regulatory/wheeling layer
   between two different utilities' customers trading directly.
+
+## 10. Review pass 2026-11-01 — behaviour that changed (read before editing)
+
+- **Restart gotcha:** seller-app must be started with `ONIX_SELLER_URL=http://localhost:18082` (its default `8082` is wrong on this machine). Symptom if forgotten: every publish fails with "network error reaching http://localhost:8082/...". The other three apps need no override.
+- **Aggregator offers** come straight from seller-app's live catalog (`/api/available-offers`), NOT from buyer-app's discovery cache. The dashboard polls every 4 s; "Refresh offers" just reloads. The buyer platform is not part of the aggregator flow.
+- **Requirement-linked blocks are reserved for the DISCOM.** The catalog entry is public (Beckn), but aggregator `init` declines any BAP whose `bapUri` is not grid-app's, and buyer-app shows such blocks as "reserved for a DISCOM requirement" and refuses to buy. Open-market blocks (publish with "Serve requirement = None") are buyable by anyone.
+- **Per-seller meter readings:** `POST /api/deliver/:txn` takes `{readings:[{offerId,kwh}]}`; each reading is capped at that seller's allocated share (`tradeAllocations`, pro-rata, last seller absorbs rounding). A single `{finalAlloc}` is still accepted and spread pro-rata. Each seller's penalty (₹2.5/kWh of THEIR shortfall) is charged to that seller, so the aggregator margin = delivered × block price − Σ(delivered_i × own price).
+- **Seller wallets:** after settlement the aggregator POSTs each member's net to seller-app `/api/credit` (idempotent per transaction+offer; one 3 s retry). seller `/api/earnings` = direct trades + `payouts`. Every dashboard header has a wallet: seller earned, buyer/DISCOM paid, aggregator margin kept (`/api/wallet`). These are settled-cash ledgers, not a payment rail.
+- **Withdraw unsold:** `POST /api/blocks/:id/withdraw` zeroes the block's unsold kWh and releases that capacity pro-rata to the pooled sellers (`withdrawn_qty`). A later `confirm_failed` on a withdrawn block returns kWh to the sellers, not to the block.
+- **Requirement bookkeeping:** recommend/publish treat unsold published kWh as covered (`openQtyFor`), so the same kWh can't be offered twice; publish rejects a pool larger than what is still uncovered. `GET /api/requirements` now includes `blocks[]` and `published_qty` (used by the Grid dashboard).
+- Test suite: scratchpad `e2e.js`, 81 checks incl. all of the above.
+
+## 11. Wallet history, single-offer blocks, re-pooling (2026-11-02)
+
+- **Wallet history** on every dashboard: click the header wallet. `GET /api/wallet/history` on each app returns `{balance, entries[]}`; an entry is `{kind: settled|pending, amount, title, subtitle, lines[{label,value,strong,note}], balanceAfter}`. Shared server helper `walletlib.js` and shared UI `public/wallet.js` are COPIED into each app — edit one, copy to all four. Buyer/grid now store `final_alloc` + `settlement_note` (from the settled `on_status`) so their history can show delivered kWh and wheeling.
+- Aggregator history = one entry per settled trade: buyer paid → aggregator received → paid to each seller → margin kept, plus "planned margin vs realized" (the gap is the seller-mix effect, since each seller is paid at their own price).
+- **Minimum of 2 pooled offers removed** — one prosumer can use the aggregator as a pure middleman.
+- **Available offers** = each seller offer's live unreserved capacity minus the pending (unpublished) pool. Publishing reserves kWh on the seller, withdrawing releases them, so a withdrawn offer is poolable again automatically. Enrolment takes the price from the seller's own offer and counts kWh already pending.
+- **Assign:** `POST /api/blocks/:id/assign {requirementId}` reserves an open-market block for a DISCOM requirement afterwards. Publishing with "None" while requirements are open asks for confirmation first.
+
+
+## 12. Packaging for a fresh machine (2026-11-02)
+
+The repo is now self-contained: clone → `npm run setup` → `npm run up`.
+
+- **`network/overlay/`** is the complete, reviewable list of our changes to the upstream `beckn/DEG` devkit
+  (the two extra onix adapters, routing, Caddy, compose, amended policy, port/proxy fixes). `scripts/setup.js`
+  sparse-clones upstream at a pinned commit into `network/DEG-repo/` (gitignored) and copies the overlay on top.
+  `network/README.md` documents every file.
+- `scripts/demo.js` starts/stops/inspects everything cross-platform (no bash/python needed); `scripts/policy-server.js`
+  replaces `python -m http.server 8099`.
+- **Found by rehearsing a clean setup in an empty folder:** upstream has no `schemas/` directory (Docker used to
+  create it on the dev machine), so setup now creates it. The rehearsal also confirmed every overlay file is
+  byte-identical to the devkit that was running on the dev machine, except `docker-compose.yml`, which gained
+  `extra_hosts: host.docker.internal:host-gateway` (Docker Engine on Linux has no such name by default; Docker Desktop
+  resolves the same address either way) and `host.docker.internal` in `NO_PROXY`.
+- **Not rehearsed:** a full cold boot of the Docker stack on a second machine (it would have taken down the live demo
+  stack on the dev machine). The first thing to do on a new machine is `npm run setup && npm run up && npm test`.
+- The suite (`tests/e2e.js`, 99 checks) skips only the shared-network Discover step when no tunnel is configured.

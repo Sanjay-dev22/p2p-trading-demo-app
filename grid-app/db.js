@@ -37,4 +37,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_events_txn ON events(transaction_id);
 `);
 
+for (const stmt of [
+  "ALTER TABLE trades ADD COLUMN final_alloc REAL",
+  "ALTER TABLE trades ADD COLUMN settlement_note TEXT",
+]) {
+  try { db.exec(stmt); } catch (_) { /* column already exists */ }
+}
+
 module.exports = db;
